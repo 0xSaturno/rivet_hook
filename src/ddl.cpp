@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "ddl.hpp"
+#include "ddl_visit.hpp"
 #include "runtime.hpp"
 #include "signature.hpp"
 #include "signature_engine.hpp"
@@ -16,155 +17,6 @@
 using namespace rivet_hook::game;
 
 namespace rivet_hook::ddl {
-	auto
-	get_ddl_field(nlohmann::json &field, const uint8_t *object, uint32_t offset, uint8_t array_type, uint8_t field_type, int32_t index, const DDLTypeInfo *const type_ptr, const int32_t type_index)
-		-> void {
-		if (array_type == 0) {
-			switch (field_type) {
-				case 0: field["default"] = (object + offset)[index]; return;
-				case 1: field["default"] = reinterpret_cast<const uint16_t *>(object + offset)[index]; return;
-				case 2: field["default"] = reinterpret_cast<const uint32_t *>(object + offset)[index]; return;
-				case 3: field["default"] = reinterpret_cast<const uint64_t *>(object + offset)[index]; return;
-				case 4: field["default"] = reinterpret_cast<const int8_t *>(object + offset)[index]; return;
-				case 5: field["default"] = reinterpret_cast<const int16_t *>(object + offset)[index]; return;
-				case 6: field["default"] = reinterpret_cast<const int32_t *>(object + offset)[index]; return;
-				case 7: field["default"] = reinterpret_cast<const int64_t *>(object + offset)[index]; return;
-				case 8: field["default"] = reinterpret_cast<const float *>(object + offset)[index]; return;
-				case 9: field["default"] = reinterpret_cast<const double *>(object + offset)[index]; return;
-				case 11:																						// enum
-				case 12: field["default"] = reinterpret_cast<const uint32_t *>(object + offset)[index]; return; // bitset
-				case 15: field["default"] = reinterpret_cast<const bool *>(object + offset)[index]; return;
-				case 17:																						// tuid
-				case 20: field["default"] = reinterpret_cast<const uint64_t *>(object + offset)[index]; return; // instance
-				case 10:
-					{ // str
-						if (auto str = reinterpret_cast<const DDLRuntimeString *>(object + offset)[index]; str.value != nullptr) {
-							nlohmann::json str_default;
-							str_default["value"] = str.value;
-							str_default["id"] = str.hash;
-							field["default"] = str_default;
-						} else {
-							field["default"] = nullptr;
-						}
-						return;
-					}
-				case 16:
-					{ // file
-						if (auto str = reinterpret_cast<const DDLRuntimeFile *>(object + offset)[index]; str.value != nullptr) {
-							nlohmann::json str_default;
-							str_default["value"] = str.value;
-							str_default["id"] = str.asset_id;
-							field["default"] = str_default;
-						} else {
-							field["default"] = nullptr;
-						}
-						return;
-					}
-				default:
-					{
-						if (g_settings.ddl.debug_ddl && (object + offset)[index] != 0 && type_ptr != nullptr) {
-							g_output << "[DDL] " << type_ptr->name << " field " << type_ptr->field_names[type_index] << " (index " << index << ", type " << static_cast<int>(field_type)
-									 << ") has non-zero value that is not handled\n";
-						}
-
-						field["default"] = nullptr;
-						return;
-					}
-			}
-		}
-
-		if (type_ptr == nullptr || index != 0) {
-			g_output << "[DDL] hit unreachable state";
-			return;
-		}
-
-		if (array_type == 1) {
-			auto count = static_cast<int32_t>(type_ptr->field_array_sizes[type_index]);
-			if (count <= 0) {
-				field["default"] = nullptr;
-				return;
-			}
-
-			nlohmann::json::array_t values;
-			for (int32_t array_index = 0; array_index < count; ++array_index) {
-				nlohmann::json tmp;
-				get_ddl_field(tmp, object, offset, 0, field_type, array_index, type_ptr, type_index);
-				values.push_back(tmp["default"]);
-			}
-			field["default"] = values;
-
-			return;
-		}
-
-		if (array_type == 2) {
-			if (auto count = reinterpret_cast<const int32_t *>(object + offset + sizeof(intptr_t) * 1)[0]; count <= 0) {
-				field["default"] = nullptr;
-				return;
-			}
-
-			if (auto ptr_values = reinterpret_cast<const uint8_t *const *>(object + offset)[0]; ptr_values == nullptr) {
-				field["default"] = nullptr;
-				return;
-			}
-
-			g_output << "[DDL] " << type_ptr->name << " field " << type_ptr->field_names[type_index] << " (type " << static_cast<int>(field_type) << ", array type " << static_cast<int>(array_type)
-					 << ") has non-zero dynamic array that is not handled\n";
-
-			// this is more complex, this will likely crash
-			/*
-			nlohmann::json::array_t values;
-			for(int32_t array_index = 0; array_index < count; ++array_index) {
-				nlohmann::json tmp;
-				get_ddl_field(tmp, ptr_values, 0, 0, field_type, array_index, type_ptr, type_index);
-				values.push_back(tmp["default"]);
-			}
-			field["default"] = values;
-			*/
-
-			return;
-		}
-
-		if (array_type == 3) {
-			auto count = reinterpret_cast<const int32_t *>(object + offset + sizeof(intptr_t) * 2)[0];
-			if (count <= 0) {
-				field["default"] = nullptr;
-				return;
-			}
-
-			auto ptrs = reinterpret_cast<const uint8_t *const *>(object + offset);
-			auto ptr_keys = ptrs[0];
-			auto ptr_values = ptrs[1];
-			if (ptr_keys == nullptr || ptr_values == nullptr) {
-				field["default"] = nullptr;
-				return;
-			}
-
-			auto map_type = type_ptr->field_map_types[type_index];
-
-			nlohmann::json::array_t values;
-			for (int32_t array_index = 0; array_index < count; ++array_index) {
-				nlohmann::json tmp_key;
-				get_ddl_field(tmp_key, ptr_keys, 0, 0, map_type, array_index, type_ptr, type_index);
-
-				nlohmann::json tmp_value;
-				get_ddl_field(tmp_value, ptr_values, 0, 0, field_type, array_index, type_ptr, type_index);
-
-				nlohmann::json tmp;
-				tmp["key"] = tmp_key["default"];
-				tmp["value"] = tmp_value["default"];
-				values.push_back(tmp);
-			}
-			field["default"] = values;
-
-			return;
-		}
-
-		if (g_settings.ddl.debug_ddl && reinterpret_cast<const uint64_t *>(object + offset)[0] != 0) {
-			g_output << "[DDL] " << type_ptr->name << " field " << type_ptr->field_names[type_index] << " (type " << static_cast<int>(field_type) << ", array type " << static_cast<int>(array_type)
-					 << ") has non-zero value that is not handled\n";
-		}
-	}
-
 	auto
 	dump_ddl() -> void {
 		g_output << "[rivet] dumping DDL structures\n";
@@ -265,7 +117,14 @@ namespace rivet_hook::ddl {
 				field["offset"] = type_ptr->field_offsets[fi];
 
 				if (ddl_inst_this != nullptr) {
-					get_ddl_field(field, static_cast<uint8_t *>(ddl_inst_this), type_ptr->field_offsets[fi], type_ptr->field_array_types[fi], type_ptr->field_types[fi], 0, type_ptr, fi);
+					Field walk_field {};
+					walk_field.owner = type_ptr;
+					walk_field.index = fi;
+					walk_field.type = static_cast<FieldType>(type_ptr->field_types[fi]);
+					walk_field.array_type = static_cast<ArrayType>(type_ptr->field_array_types[fi]);
+
+					JsonVisitor visitor { field };
+					visit_field(visitor, static_cast<const uint8_t *>(ddl_inst_this), type_ptr->field_offsets[fi], walk_field);
 				}
 
 				if (const auto *extra = type_ptr->field_ex[fi]; extra != nullptr) {

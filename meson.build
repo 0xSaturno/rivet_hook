@@ -110,16 +110,29 @@ deps = [
 ]
 
 if not get_option('loader_only')
+    # the interpreter and luac are dead weight inside a dll, and loadlib would let
+    # a script pull an arbitrary library into the game's address space
+    lua_dep = subproject('lua', default_options: {
+        'interpreter': false,
+        'loadlib': 'disabled',
+        'line_editing': 'disabled',
+    }, required: true).get_variable('lua_dep')
+
     sources += [
+        'src/bridge.cpp',
         'src/ddl.cpp',
+        'src/ddl_visit.cpp',
+        'src/ddl_inspector.cpp',
         'src/overlay.cpp',
         'src/overlay_core.cpp',
+        'src/scripting.cpp',
     ]
     deps += [
         imgui_dep,
         dxgi_dep,
         d3d12_dep,
         directxmath_dep,
+        lua_dep,
     ]
 else
     cpp_args += ['-DRIVET_ONLY_LOADER']

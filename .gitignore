@@ -11,3 +11,5 @@ subprojects/*
 !subprojects/packagefiles
 !subprojects/*.wrap
 !subprojects/*.wrap.license
+
+imgui.ini

@@ -38,6 +38,24 @@ namespace rivet_hook {
 			bool debug_ddl = false;
 		} ddl;
 
+		struct Bridge {
+			bool enabled = false;
+			std::string pipe_name { "rivet_hook" };
+		} bridge;
+
+		struct Scripts {
+			bool enabled = false;
+			std::string path { "scripts" };
+			int reload_key = VK_F6;
+			// wall clock cap for one callback, in milliseconds. everything lua runs
+			// runs on the render thread, so this is the stutter budget.
+			int budget_ms = 8;
+			// how many vm instructions between budget checks
+			int check_interval = 10000;
+			// consecutive failures before a callback is switched off
+			int error_limit = 3;
+		} scripts;
+
 		struct RenderDoc {
 			bool enabled = false;
 			std::string dll_path { "renderdoc.dll" };

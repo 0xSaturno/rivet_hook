@@ -13,7 +13,9 @@
 
 #ifndef RIVET_ONLY_LOADER
 #include "ddl.hpp"
+#include "bridge.hpp"
 #include "overlay.hpp"
+#include "scripting.hpp"
 #endif
 
 #include "runtime.hpp"
@@ -258,6 +260,8 @@ namespace rivet_hook {
 
 			#ifndef RIVET_ONLY_LOADER
 			Overlay::Init();
+			bridge::init();
+			scripting::init();
 			g_output << "[rivet] starting ddl thread\n";
 			std::thread(ddl::dump).detach();
 
@@ -322,6 +326,8 @@ namespace rivet_hook {
 			#ifndef RIVET_ONLY_LOADER
 			g_output << "[rivet] Overlay fini\n";
 			g_output.flush();
+			scripting::fini();
+			bridge::fini();
 			Overlay::Fini();
 			#endif
 			g_output << "[rivet] AssetLoader fini\n";

@@ -83,8 +83,15 @@ meson compile -C build/hook -j 0
 
 Copy `build/hook/rivet_hook.dll` to the game installation folder.
 
+## Lua scripting
+
+rivet_hook embeds Lua 5.4 and runs `scripts/*.lua` from the game directory, with
+per-frame and per-key callbacks over live engine state and hot reload.
+Off by default; see [docs/LUA_SCRIPTING.md](docs/LUA_SCRIPTING.md).
+
 ## Features
 
+- lua scripting with hot reload
 - asset replacement without modifying archives
 - ddl and asset manager version dumping
 - disable crash handler (crs-handler.exe)

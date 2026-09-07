@@ -22,7 +22,7 @@ if (tbl.contains(#group) && tbl.at(#group).is_table()) { \
 }
 
 #define LOAD_SETTING_KEY(group, name) \
-if (tbl.contains(#group) && tbl.at(#group).is_table()) { \
+if (tbl.contains(#group) && tbl.at(#group).is_table() && tbl.at(#group).contains(#name)) { \
 	auto var = tbl.at(#group).at(#name); \
 	if (var.is_string()) settings.group.name = StringToVKey(var.as_string()); \
 	else if (var.is_integer()) settings.group.name = static_cast<int>(var.as_integer()); \
@@ -93,6 +93,16 @@ namespace rivet_hook {
 				LOAD_SETTING(ddl, bool, dump_ddl);
 				LOAD_SETTING(ddl, bool, debug_ddl);
 
+				LOAD_SETTING(bridge, bool, enabled);
+				LOAD_SETTING(bridge, std::string, pipe_name);
+
+				LOAD_SETTING(scripts, bool, enabled);
+				LOAD_SETTING(scripts, std::string, path);
+				LOAD_SETTING_KEY(scripts, reload_key);
+				LOAD_SETTING(scripts, int, budget_ms);
+				LOAD_SETTING(scripts, int, check_interval);
+				LOAD_SETTING(scripts, int, error_limit);
+
 				LOAD_SETTING(renderdoc, bool, enabled);
 				LOAD_SETTING(renderdoc, std::string, dll_path);
 
@@ -125,8 +135,15 @@ namespace rivet_hook {
 						}
 					}
 				}
+			} catch (const std::exception &failure) {
+				// a swallowed parse error silently resets every setting to its
+				// default and then saves that over the user's file, which is very
+				// hard to diagnose from the outside. say something.
+				g_output << "[rivet] could not read " << settings_name << ", falling back to defaults: " << failure.what() << "\n";
+				g_output.flush();
 			} catch (...) {
-				// ignored
+				g_output << "[rivet] could not read " << settings_name << ", falling back to defaults\n";
+				g_output.flush();
 			}
 		}
 
@@ -140,6 +157,8 @@ namespace rivet_hook {
 		CREATE_TABLE(utility);
 		CREATE_TABLE(overlay);
 		CREATE_TABLE(ddl);
+		CREATE_TABLE(bridge);
+		CREATE_TABLE(scripts);
 		CREATE_TABLE(renderdoc);
 		CREATE_TABLE(assets);
 		CREATE_TABLE(log);
@@ -158,6 +177,16 @@ namespace rivet_hook {
 		SAVE_SETTING(ddl, dump_components, "dumps components to json; disable by default for clutter reasons");
 		SAVE_SETTING(ddl, dump_ddl, "dumps DDL type structures to json; disable by default for clutter reasons");
 		SAVE_SETTING(ddl, debug_ddl, "logs DDL type information; disable by default because log noise");
+
+		SAVE_SETTING(bridge, enabled, "expose a named pipe for external tooling; disable by default because it is an rpc surface inside the game");
+		SAVE_SETTING(bridge, pipe_name, R"(name of the pipe, reachable as \\.\pipe\<name>)");
+
+		SAVE_SETTING(scripts, enabled, "run lua scripts from the scripts directory; disable by default because a script runs arbitrary code inside the game");
+		SAVE_SETTING(scripts, path, "directory the .lua files are loaded from, relative to the game exe");
+		SAVE_SETTING_KEY(scripts, reload_key, "what key to reload every script with");
+		SAVE_SETTING(scripts, budget_ms, "wall clock budget for one script callback in milliseconds; scripts run on the render thread so overrunning this is a visible stutter");
+		SAVE_SETTING(scripts, check_interval, "how many lua instructions run between budget checks");
+		SAVE_SETTING(scripts, error_limit, "consecutive errors before a callback is switched off");
 
 		SAVE_SETTING(renderdoc, enabled, "loads renderdoc.dll into the game; disable by default because it has issues with ReShade");
 		SAVE_SETTING(renderdoc, dll_path, "path to renderdoc/dll");

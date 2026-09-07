@@ -11,10 +11,12 @@
 
 #include <imgui.h>
 
+#include "ddl_inspector.hpp"
 #include "game/hero_manager.hpp"
 #include "game/scene_manager.hpp"
 #include "overlay.hpp"
 #include "runtime.hpp"
+#include "scripting.hpp"
 #include "signature.hpp"
 #include "signature_engine.hpp"
 
@@ -62,6 +64,14 @@ namespace rivet_hook {
 		if (vk == g_settings.overlay.spawn_debug_actor_key) {
 			SetEvent(g_SpawnSignal);
 		}
+
+		if (g_settings.scripts.enabled && vk == g_settings.scripts.reload_key) {
+			scripting::request_reload();
+		}
+
+		// this is the input thread, not the render thread, so the key is only
+		// queued here and dispatched by the next pump
+		scripting::on_key_event(vk);
 	}
 
 	static auto
@@ -136,6 +146,19 @@ namespace rivet_hook {
 				}
 			}
 		}
+
+		static std::string lastDumpPath;
+		if (ImGui::Button("Dump JSON")) {
+			lastDumpPath = DumpActor(actor);
+		}
+
+		ImGui::SetItemTooltip("writes this actor, every component and their live prius data to the game directory");
+
+		if (!lastDumpPath.empty()) {
+			ImGui::SameLine();
+			ImGui::TextDisabled("%s", lastDumpPath.c_str());
+		}
+
 		ImGui::LabelText("Type", "0x%04x", actor->type);
 		ImGui::LabelText("Scene Index", "0x%08x", actor->sceneIndex);
 		ImGui::LabelText("Flags", "0x%08x", actor->flags);
@@ -193,7 +216,7 @@ namespace rivet_hook {
 					ImGui::LabelText("Parent Handle", "0x%08x", instance->parentComponent.value);
 					ImGui::LabelText("Child Count", "0x%02x", instance->childCount);
 
-					// todo: do something with component data.
+					DrawComponentPrius(componentType, instance);
 				}
 				ImGui::EndChild();
 				ImGui::PopID();

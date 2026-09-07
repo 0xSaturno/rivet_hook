@@ -92,11 +92,19 @@ namespace rivet_hook::game {
 		uint32_t hash;
 	};
 
+	static_assert(sizeof(DDLRuntimeString) == 0x10, "DDLRuntimeString size is not 0x10");
+
+	// asset_id is packed directly after length, unaligned, and the struct is padded
+	// out to 0x18 at the end. live field offsets put consecutive file fields 0x18
+	// apart, and reading asset_id at +0x10 instead yields ids with a zero high half.
 	struct DDLRuntimeFile {
 		const char *value;
 		int32_t length;
 		uint64_t asset_id;
+		uint32_t padding;
 	};
+
+	static_assert(sizeof(DDLRuntimeFile) == 0x18, "DDLRuntimeFile size is not 0x18");
 
 	struct ComponentPriusInfo {
 		ddl_call_t *init;
