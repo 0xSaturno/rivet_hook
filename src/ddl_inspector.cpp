@@ -352,10 +352,13 @@ namespace rivet_hook {
 		}
 
 		dump["name"] = actor_name;
-		dump["type"] = actor->type;
+		dump["generation"] = actor->generation;
+		dump["zone_index"] = actor->zoneIndex;
 		dump["scene_index"] = actor->sceneIndex;
 		dump["flags"] = actor->flags;
-		dump["parent"] = actor->parentHandle.value;
+		dump["flag_names"] = DescribeActorFlags(actor->flags);
+		dump["update_parent"] = actor->updateParent.value;
+		dump["time_scale"] = actor->timeScale;
 		dump["component_count"] = actor->componentCount;
 
 		if (actor->object != nullptr && ddl::is_readable(actor->object, sizeof(SceneObject))) {
@@ -371,7 +374,7 @@ namespace rivet_hook {
 		nlohmann::json::array_t components;
 		for (auto index = 0; index < actor->componentCount; ++index) {
 			const auto [type, instance] = actor->components[index];
-			if (type == nullptr || instance == nullptr) {
+			if (type == nullptr || instance == nullptr || instance->IsDestroyed()) {
 				continue;
 			}
 
@@ -379,6 +382,9 @@ namespace rivet_hook {
 			component["name"] = SafeText(type->name);
 			component["id"] = type->id;
 			component["size"] = type->size;
+			component["class_flags"] = DescribeFlags(type->class_flags, COMPONENT_CLASS_FLAG_NAMES, std::size(COMPONENT_CLASS_FLAG_NAMES));
+			component["prius_behavior"] = PriusBehaviorName(type->prius_behavior);
+			component["active"] = (instance->flags & ComponentFlag::Active) != 0;
 			component["handle"] = instance->handle.value;
 			component["parent_handle"] = instance->parentComponent.value;
 			component["prius_size"] = type->prius_info.size;

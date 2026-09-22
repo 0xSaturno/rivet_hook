@@ -104,9 +104,9 @@ namespace rivet_hook::game {
 
 	struct Asset {
 		AssetStatus status;
-		uint8_t unknown1;
-		AssetManagerType type;
-		uint8_t unknown2;
+		uint8_t generation; // bumped on every (re)load
+		uint8_t rawType; // AssetManagerType with bit 7 set as a stomp check, read through GetType
+		uint8_t flags;
 		uint16_t refCount;
 		AssetLanguage language;
 		uint8_t unknown3;
@@ -114,8 +114,13 @@ namespace rivet_hook::game {
 		const char *name;
 		uint16_t nameOffset;
 		uint16_t unknown4[3];
-		const char *note;
+		const char *note; // not a readable pointer in the shipping build
 		AssetId loadedFrom;
+
+		__forceinline auto
+		GetType() const -> AssetManagerType {
+			return static_cast<AssetManagerType>(rawType & 0x7F);
+		}
 
 		__forceinline auto
 		GetShortName() const -> const char * {

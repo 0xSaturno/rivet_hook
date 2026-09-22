@@ -159,22 +159,24 @@ namespace rivet_hook {
 			ImGui::TextDisabled("%s", lastDumpPath.c_str());
 		}
 
-		ImGui::LabelText("Type", "0x%04x", actor->type);
+		ImGui::LabelText("Generation", "0x%04x", actor->generation);
 		ImGui::LabelText("Scene Index", "0x%08x", actor->sceneIndex);
 		ImGui::LabelText("Flags", "0x%08x", actor->flags);
-		ImGui::LabelText("Parent", "0x%08x", actor->parentHandle.value);
-		ImGui::BeginDisabled(!actor->parentHandle.IsValid());
-		if (ImGui::Button("Show Parent")) {
-			handle = actor->parentHandle;
+		ImGui::TextWrapped("%s", DescribeActorFlags(actor->flags).c_str());
+		// update order, not the transform hierarchy
+		ImGui::LabelText("Update Parent", "0x%08x", actor->updateParent.value);
+		ImGui::BeginDisabled(!actor->updateParent.IsValid());
+		if (ImGui::Button("Show Update Parent")) {
+			handle = actor->updateParent;
 		}
 		ImGui::EndDisabled();
-		ImGui::LabelText("Index", "0x%04x", actor->parentIndex);
+		ImGui::LabelText("Index In Parent", "%d", actor->parentChildrenIndex);
 
-		ImGui::Text("%d Children", actor->childCount);
+		ImGui::Text("%d Update Children", actor->updateChildrenCount);
 		const auto width = ImGui::GetContentRegionAvail().x;
 		if (ImGui::BeginChild("actor_children", ImVec2(width, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeY | ImGuiChildFlags_AutoResizeY)) {
-			for (auto index = 0; index < actor->childCount; index++) {
-				const auto childHandle = actor->children[index];
+			for (auto index = 0; index < actor->updateChildrenCount && actor->updateChildren != nullptr; index++) {
+				const auto childHandle = actor->updateChildren[index];
 				if (!childHandle.IsValid()) {
 					continue;
 				}
@@ -204,7 +206,7 @@ namespace rivet_hook {
 			const auto inner_width = ImGui::GetContentRegionAvail().x;
 			for (auto index = 0; index < actor->componentCount; index++) {
 				const auto [componentType, instance] = actor->components[index];
-				if (componentType == nullptr || instance == nullptr) {
+				if (componentType == nullptr || instance == nullptr || instance->IsDestroyed()) {
 					continue;
 				}
 
@@ -215,6 +217,8 @@ namespace rivet_hook {
 					ImGui::LabelText("Handle", "0x%08x", instance->handle.value);
 					ImGui::LabelText("Parent Handle", "0x%08x", instance->parentComponent.value);
 					ImGui::LabelText("Child Count", "0x%02x", instance->childCount);
+					ImGui::LabelText("Prius", "%s", PriusBehaviorName(componentType->prius_behavior));
+					ImGui::TextWrapped("%s", DescribeFlags(componentType->class_flags, COMPONENT_CLASS_FLAG_NAMES, std::size(COMPONENT_CLASS_FLAG_NAMES)).c_str());
 
 					DrawComponentPrius(componentType, instance);
 				}
@@ -232,7 +236,7 @@ namespace rivet_hook {
 		char labelSwap[0x100];
 
 		if (ImGui::BeginChild("actor_groups_left", ImVec2(150, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX)) {
-			for (auto index = 0; index < g_SceneManager->actorGroupCount; index++) {
+			for (auto index = 0; index < g_SceneManager->actorGroupMax; index++) {
 				if (const auto *actorGroup = &g_SceneManager->actorGroups[index]; actorGroup->handles != nullptr && actorGroup->count > 0) {
 					const char *name = actorGroup->name;
 					if (!name || !*name) {
@@ -252,7 +256,7 @@ namespace rivet_hook {
 
 		ImGui::SameLine();
 
-		if (ImGui::BeginChild("actor_groups_middle", ImVec2(300, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX) && selectedIndex > -1 && selectedIndex < g_SceneManager->actorGroupCount) {
+		if (ImGui::BeginChild("actor_groups_middle", ImVec2(300, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX) && selectedIndex > -1 && selectedIndex < g_SceneManager->actorGroupMax) {
 			if (const auto *actorGroup = &g_SceneManager->actorGroups[selectedIndex]; actorGroup->handles != nullptr && actorGroup->count > 0) {
 				for (auto index = 0; index < actorGroup->count; index++) {
 					const auto handle = actorGroup->handles[index];
@@ -296,7 +300,7 @@ namespace rivet_hook {
 
 	static auto
 	CheckActorGroups() -> bool {
-		return g_SceneManager != nullptr && g_SceneManager->actorGroups != nullptr && g_SceneManager->actorGroupCount > 0;
+		return g_SceneManager != nullptr && g_SceneManager->actorGroups != nullptr && g_SceneManager->actorGroupMax > 0;
 	}
 
 	static auto

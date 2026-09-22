@@ -107,7 +107,7 @@ namespace rivet_hook::bridge {
 		const auto *filter = args.size() > 1 ? args[1].c_str() : nullptr;
 		const auto limit = args.size() > 2 ? std::stoi(args[2]) : 200;
 
-		const auto count = g_SceneManager->actorCount;
+		const auto count = g_SceneManager->actorMax;
 		if (count <= 0) {
 			return error("scene has no actors");
 		}
@@ -155,12 +155,13 @@ namespace rivet_hook::bridge {
 			}
 
 			nlohmann::json entry;
-			entry["handle"] = EngineHandle { .id = static_cast<uint32_t>(index), .type = actor->type }.value;
+			entry["handle"] = EngineHandle { .id = static_cast<uint32_t>(index), .generation = actor->generation }.value;
 			entry["index"] = index;
-			entry["type"] = actor->type;
+			entry["generation"] = actor->generation;
 			entry["name"] = name;
+			entry["flags"] = DescribeActorFlags(actor->flags);
 			entry["components"] = actor->componentCount;
-			entry["children"] = actor->childCount;
+			entry["update_children"] = actor->updateChildrenCount;
 			actors.emplace_back(entry);
 		}
 
@@ -168,6 +169,7 @@ namespace rivet_hook::bridge {
 		result["returned"] = actors.size();
 		result["matched"] = matched;
 		result["total"] = count;
+		result["live"] = g_SceneManager->actorCount;
 		result["scanned"] = scanned;
 		result["truncated"] = truncated;
 		result["limit"] = limit;
@@ -234,7 +236,8 @@ namespace rivet_hook::bridge {
 		nlohmann::json result;
 		result["handle"] = handle.value;
 		result["name"] = name;
-		result["type"] = actor->type;
+		result["generation"] = actor->generation;
+		result["flags"] = DescribeActorFlags(actor->flags);
 		result["components"] = actor->componentCount;
 
 		if (actor->object != nullptr && ddl::is_readable(actor->object, sizeof(SceneObject))) {
@@ -354,6 +357,19 @@ namespace rivet_hook::bridge {
 			entry["update_async_results"] = describe(info->update_async_results);
 			entry["create"] = describe(info->create);
 			entry["prius_size"] = info->prius_info.size;
+			entry["prius_behavior"] = PriusBehaviorName(info->prius_behavior);
+			entry["class_flags"] = DescribeFlags(info->class_flags, COMPONENT_CLASS_FLAG_NAMES, std::size(COMPONENT_CLASS_FLAG_NAMES));
+			entry["update_order"] = info->update_order;
+
+			nlohmann::json::array_t parents;
+			for (uint8_t p = 0; p < info->parent_count && p < std::size(info->parent_classes); ++p) {
+				char parent[0x100];
+				if (const auto *parent_info = info->parent_classes[p]; parent_info != nullptr && ddl::is_readable(parent_info, sizeof(ComponentInfo)) && ddl::read_string(parent_info->name, parent, sizeof(parent))) {
+					parents.emplace_back(parent);
+				}
+			}
+
+			entry["parents"] = parents;
 			matches.emplace_back(entry);
 		}
 
@@ -780,7 +796,7 @@ namespace rivet_hook::bridge {
 		auto truncated = false;
 
 		nlohmann::json::array_t groups;
-		for (int32_t index = 0; index < g_SceneManager->actorGroupCount; ++index) {
+		for (int32_t index = 0; index < g_SceneManager->actorGroupMax; ++index) {
 			if ((index & 0x3F) == 0 && GetTickCount64() - started > GROUP_BUDGET_MS) {
 				truncated = true;
 				break;

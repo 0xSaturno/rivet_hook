@@ -16,7 +16,8 @@ namespace rivet_hook::game {
 		union {
 			struct {
 				uint32_t id : 20;
-				uint32_t type : 12;
+				// bumped every time the slot is reused, 0 is never a live handle
+				uint32_t generation : 12;
 			};
 
 			uint32_t value;
@@ -45,6 +46,46 @@ namespace rivet_hook::game {
 	struct SceneObject;
 	struct Component;
 
+	namespace ActorFlag {
+		constexpr uint32_t Activated = 1u << 0;
+		constexpr uint32_t Template = 1u << 2;
+		constexpr uint32_t StartedActive = 1u << 3;
+		// the slot is in use. freed slots keep their stale scene object pointer
+		constexpr uint32_t Allocated = 1u << 9;
+		constexpr uint32_t Destroying = 1u << 10;
+		// components tick
+		constexpr uint32_t UpdateEnabled = 1u << 13;
+	} // namespace ActorFlag
+
+	constexpr const char *ACTOR_FLAG_NAMES[] = {
+		"Activated",
+		"Hatched",
+		"Template",
+		"StartedActive",
+		"PriusPermanent",
+		"EnableActivationEvents",
+		"ActivateEventsBroadcast",
+		"DestroyOnUnloadZone",
+		"DestroyOnUnloadLevel",
+		"Allocated",
+		"Destroying",
+		"IgnoreZoneVisibilityChanges",
+		"IsActivatingOrDeactivating",
+		"UpdateEnabled",
+		"TimeScaleUpdated",
+		"ZoneUnloading",
+		nullptr,
+		"FXSpawned",
+		"IsSynced",
+		"IsMovingSurface",
+		"IsMovingSurfaceChild",
+	};
+
+	inline auto
+	DescribeActorFlags(const uint32_t flags) -> std::string {
+		return DescribeFlags(flags, ACTOR_FLAG_NAMES, std::size(ACTOR_FLAG_NAMES));
+	}
+
 	struct ComponentPointer {
 		ComponentInfo* componentType;
 		Component* instance;
@@ -52,19 +93,21 @@ namespace rivet_hook::game {
 
 	static_assert(sizeof(ComponentPointer) == 0x10, "ComponentPointer size is not 0x10");
 
+	// updateParent and updateChildren are update order dependencies, not the
+	// transform hierarchy
 	struct Actor {
 		SceneObject *object;
-		uint16_t type;
-		uint16_t unknown1;
+		uint16_t generation;
+		int16_t zoneIndex; // -1 when the actor belongs to no zone
 		uint32_t sceneIndex;
-		uint32_t flags;
-		EngineHandle parentHandle;
-		uint16_t unknown2[2];
-		int16_t parentIndex;
+		uint32_t flags; // ActorFlag
+		EngineHandle updateParent;
+		uint16_t updateBucket[2]; // current, default
+		int16_t parentChildrenIndex; // this actor's slot in updateParent's updateChildren
 		uint16_t unknown4;
-		EngineHandle *children;
-		uint16_t childCount;
-		uint16_t childCapacity;
+		EngineHandle *updateChildren;
+		uint16_t updateChildrenCount;
+		uint16_t updateChildrenMax;
 		uint32_t unknown5;
 		Asset *actorAsset;
 		uint64_t unknown6[4];
@@ -79,8 +122,10 @@ namespace rivet_hook::game {
 		uint16_t componentLookupCount;
 		uint16_t componentLookupCapacity;
 		uint32_t unknown13;
-		float unknownFloat[2];
-		double unknownDouble[2];
+		float timeScale;
+		float timeScaleRequested; // copied into timeScale once a frame
+		double timeScaleUpdateTime;
+		double timeAccumulator;
 		uint64_t unknown14;
 		const char *name;
 		uint64_t unknown15;
@@ -99,18 +144,15 @@ namespace rivet_hook::game {
 		}
 
 		__forceinline auto
-		HasParent() const -> bool {
-			return parentIndex > -1;
+		HasUpdateChildren() const -> bool {
+			return updateChildren != nullptr && updateChildrenCount > 0;
 		}
 
-		__forceinline auto
-		HasChildren() const -> bool {
-			return childCount > 0 && childCapacity > 0;
-		}
-
+		// a live, allocated slot. a freed slot can keep its old scene object
+		// pointer, so the object alone does not prove anything.
 		__forceinline auto
 		IsValid() const -> bool {
-			return type != 0 && object != nullptr;
+			return generation != 0 && (flags & ActorFlag::Allocated) != 0 && object != nullptr;
 		}
 	};
 
@@ -142,23 +184,38 @@ namespace rivet_hook::game {
 	static_assert(offsetof(SceneObject, extents) == 0x50, "SceneObject radius offset is not 0x4C");
 	static_assert(offsetof(SceneObject, scale) == 0x70, "SceneObject radius offset is not 0x70");
 
-	constexpr int COMPONENT_VTABLE_GET_TYPE_INFO = 0xA;
+	// slot 9 (+0x48), the one the update dispatcher calls through
+	constexpr int COMPONENT_VTABLE_GET_TYPE_INFO = 0x9;
+
+	namespace ComponentFlag {
+		constexpr uint8_t Active = 1u << 0;
+		// awaiting cleanup: still in the actor's list but no longer alive
+		constexpr uint8_t Destroyed = 1u << 1;
+	} // namespace ComponentFlag
 
 	struct Component {
 		intptr_t* vtable;
 		void* ddlPriusData;
 		Actor* actor;
-		float unknown1;
+		float timeScale; // mirrored from the owning actor
 		EngineHandle handle;
-		uint32_t unknown2;
-		uint32_t childCount : 8;
-		uint32_t flags : 24;
-		uint32_t unknown3[0x6];
-		uint32_t flags2;
+		uint32_t syncHandle;
+		uint8_t childCount;
+		uint8_t flags; // ComponentFlag
+		uint16_t padding;
+		uint32_t updateListIndex[0x6]; // slot in each update stage's list
+		uint32_t updateFlags; // bit n = update stage n enabled
 		EngineHandle parentComponent;
+
+		__forceinline auto
+		IsDestroyed() const -> bool {
+			return (flags & ComponentFlag::Destroyed) != 0;
+		}
 	};
 
 	static_assert(sizeof(Component) == 0x48, "Component size is not 0x48");
+	static_assert(offsetof(Component, flags) == 0x25, "Component flags offset is not 0x25");
+	static_assert(offsetof(Component, updateFlags) == 0x40, "Component updateFlags offset is not 0x40");
 
 	struct ActorGroup {
 		EngineHandle *handles;

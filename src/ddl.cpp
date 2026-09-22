@@ -299,23 +299,26 @@ namespace rivet_hook::ddl {
 				prius_json.emplace_back(component_info.prius->type_id);
 				component["prius"] = prius_json;
 			}
-			component["flags"] = component_info.flags;
-			component["flags2"] = component_info.flags2;
-			component["unknown3"] = component_info.unknown3;
-			component["index_a"] = component_info.index_a;
-			component["index_b"] = component_info.index_b;
-			component["unknown4"] = component_info.unknown4;
+			component["class_flags"] = component_info.class_flags;
+			component["class_flag_names"] = DescribeFlags(component_info.class_flags, COMPONENT_CLASS_FLAG_NAMES, std::size(COMPONENT_CLASS_FLAG_NAMES));
+			component["prius_behavior"] = PriusBehaviorName(component_info.prius_behavior);
+			component["index"] = component_info.index;
+			component["update_order"] = component_info.update_order;
+			component["cache_index"] = component_info.cache_index;
+			component["block_count"] = component_info.block_count;
+			component["parent_count"] = component_info.parent_count;
 			auto bases = nlohmann::json::array_t();
 
-			for (int j = 0; j < 9; ++j) {
-				if (component_info.base_components[j] == 0) {
+			// the chain is parent_count long, the tail past it is not cleared
+			for (int j = 0; j < component_info.parent_count && j < static_cast<int>(std::size(component_info.parent_classes)); ++j) {
+				const auto *base = component_info.parent_classes[j];
+				if (base == nullptr) {
 					continue;
 				}
 
-				auto base = *reinterpret_cast<ComponentInfo*>(component_info.base_components[j]);
 				auto base_json = nlohmann::json::array_t();
-				base_json.emplace_back(base.name ? base.name : "");
-				base_json.emplace_back(base.id);
+				base_json.emplace_back(base->name ? base->name : "");
+				base_json.emplace_back(base->id);
 				bases.emplace_back(base_json);
 			}
 

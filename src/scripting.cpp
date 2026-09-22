@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 extern "C" {
@@ -257,17 +258,16 @@ namespace rivet_hook::scripting {
 
 	static auto
 	scene_ready() -> bool {
-		return g_SceneManager != nullptr && g_SceneManager->actors != nullptr && g_SceneManager->actorCount > 0 && ddl::is_readable(g_SceneManager->actors, sizeof(Actor));
+		return g_SceneManager != nullptr && g_SceneManager->actors != nullptr && g_SceneManager->actorMax > 0 && ddl::is_readable(g_SceneManager->actors, sizeof(Actor));
 	}
 
 	static auto
 	handle_of(const int32_t index, const Actor *actor) -> uint32_t {
-		return EngineHandle { .id = static_cast<uint32_t>(index), .type = actor->type }.value;
+		return EngineHandle { .id = static_cast<uint32_t>(index), .generation = actor->generation }.value;
 	}
 
 	// resolves an actor handle, raising rather than returning null. ResolveActor is
-	// not used because it bounds checks with > instead of >= and does not confirm
-	// the entry is mapped.
+	// not used because it does not confirm the entry is mapped.
 	static auto
 	resolve_actor(lua_State *L, const int arg) -> Actor * {
 		const auto value = static_cast<uint32_t>(luaL_checkinteger(L, arg));
@@ -284,12 +284,12 @@ namespace rivet_hook::scripting {
 		char handle_text[16];
 		_snprintf_s(handle_text, sizeof(handle_text), _TRUNCATE, "0x%08x", value);
 
-		if (static_cast<int32_t>(handle.id) >= g_SceneManager->actorCount) {
+		if (static_cast<int32_t>(handle.id) >= g_SceneManager->actorMax) {
 			luaL_error(L, "actor handle %s is past the end of the scene", handle_text);
 		}
 
 		auto *actor = &g_SceneManager->actors[handle.id];
-		if (!ddl::is_readable(actor, sizeof(Actor)) || actor->type != handle.type) {
+		if (handle.generation == 0 || !ddl::is_readable(actor, sizeof(Actor)) || actor->generation != handle.generation) {
 			luaL_error(L, "no actor for handle %s", handle_text);
 		}
 
@@ -325,6 +325,12 @@ namespace rivet_hook::scripting {
 				continue;
 			}
 
+			// a destroyed component stays in the list until cleanup, and a live one
+			// of the same class can follow it
+			if (!ddl::is_readable(instance, sizeof(Component)) || instance->IsDestroyed()) {
+				continue;
+			}
+
 			if (const auto *info = type->prius; info != nullptr && ddl::is_readable(info, sizeof(DDLTypeInfo)) && info->field_count > 0) {
 				*prius = info;
 				*data = ddl::prius_data(instance->ddlPriusData, info->allocation_size);
@@ -343,12 +349,12 @@ namespace rivet_hook::scripting {
 	// resolves actor + component + field for the two prius bindings, raising with
 	// the reason on any miss. no non trivial object may be alive in the caller.
 	static auto
-	resolve_field(lua_State *L, const DDLTypeInfo **prius, uint8_t **data) -> int32_t {
+	resolve_field(lua_State *L, const DDLTypeInfo **prius, uint8_t **data, const ComponentInfo **type = nullptr) -> int32_t {
 		const auto *actor = resolve_actor(L, 1);
 		const auto *component = luaL_checkstring(L, 2);
 		const auto *name = luaL_checkstring(L, 3);
 
-		if (find_component(actor, component, prius, data) == nullptr) {
+		if (find_component(actor, component, prius, data, type) == nullptr) {
 			luaL_error(L, "this actor has no %s component", component);
 		}
 
@@ -550,7 +556,7 @@ namespace rivet_hook::scripting {
 		auto fallback = -1;
 		const Actor *fallback_actor = nullptr;
 
-		const auto count = g_SceneManager->actorCount;
+		const auto count = g_SceneManager->actorMax;
 		for (int32_t index = 0; index < count; ++index) {
 			// a loaded level holds tens of thousands of actors and this runs inside
 			// the frame, so the scan answers to the same budget everything else does
@@ -598,7 +604,7 @@ namespace rivet_hook::scripting {
 			return 1;
 		}
 
-		const auto count = g_SceneManager->actorCount;
+		const auto count = g_SceneManager->actorMax;
 		int32_t matched = 0;
 		for (int32_t index = 0; index < count && matched < limit; ++index) {
 			if ((index & SCAN_CHECK_MASK) == 0 && budget_expired()) {
@@ -708,6 +714,10 @@ namespace rivet_hook::scripting {
 				continue;
 			}
 
+			if (instance == nullptr || !ddl::is_readable(instance, sizeof(Component)) || instance->IsDestroyed()) {
+				continue;
+			}
+
 			char name[0x100];
 			if (!ddl::read_string(type->name, name, sizeof(name))) {
 				continue;
@@ -737,7 +747,8 @@ namespace rivet_hook::scripting {
 	l_set_field(lua_State *L) -> int {
 		const DDLTypeInfo *prius = nullptr;
 		uint8_t *data = nullptr;
-		const auto index = resolve_field(L, &prius, &data);
+		const ComponentInfo *type = nullptr;
+		const auto index = resolve_field(L, &prius, &data, &type);
 		const auto value = check_value(L, 4);
 		const auto element = static_cast<int32_t>(luaL_optinteger(L, 5, 1)) - 1;
 
@@ -746,6 +757,16 @@ namespace rivet_hook::scripting {
 		const char *reason = "the write was refused";
 		if (!ddl::write_field(prius, data, index, element, value, &reason)) {
 			luaL_error(L, "%s", reason);
+		}
+
+		// a ReadOnly prius is one allocation behind every instance of the actor, so
+		// the write just changed all of them. said once per class, not per frame.
+		if (type != nullptr && type->prius_behavior == PriusBehavior::ReadOnly) {
+			static std::unordered_set<const ComponentInfo *> warned;
+			if (warned.insert(type).second) {
+				g_output << "[script] set_field: " << lua_tostring(L, 2) << " has a shared prius, the write changes every instance that uses it\n";
+				g_output.flush();
+			}
 		}
 
 		return push_value(L, previous);
@@ -780,6 +801,13 @@ namespace rivet_hook::scripting {
 
 		lua_pushinteger(L, instance->handle.value);
 		lua_setfield(L, -2, "handle");
+
+		if (type != nullptr) {
+			lua_pushstring(L, PriusBehaviorName(type->prius_behavior));
+			lua_setfield(L, -2, "prius_behavior");
+			lua_pushboolean(L, type->prius_behavior == PriusBehavior::ReadOnly ? 1 : 0);
+			lua_setfield(L, -2, "shared");
+		}
 
 		if (data != nullptr) {
 			_snprintf_s(text, sizeof(text), _TRUNCATE, "%016llx", reinterpret_cast<uintptr_t>(data));

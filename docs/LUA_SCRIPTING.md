@@ -29,8 +29,14 @@ is redirected there too, since the game has no console.
 ## Where the code runs
 
 Everything runs on the **render thread**, from the same `present` hook the
-bridge pumps from. That is the only place engine state is safe to touch, and it
-has two consequences worth internalising:
+bridge pumps from. That is not a safe point for engine state: the render thread
+most likely presents while the game thread is running the next frame's actor
+and component updates, so a script reads and writes state that is being updated
+at the same moment. A single aligned value (a float field, a transform row)
+usually lands harmlessly, which is why this rarely shows, but a read can see a
+half updated struct and a write can be overwritten within the frame. Moving the
+pump onto the game thread, between updates, is planned; until then treat every
+read as a snapshot and keep writes small. Two further consequences:
 
 - A slow script is a visible stutter. Each callback gets `budget_ms`
   milliseconds of wall clock; overrun and it is stopped with an error.
@@ -109,6 +115,11 @@ a bad frame rather than a bug, so `pcall` those too and try again later.
 | `rivet.field(handle, component, field, [element])` | the value; a string or file field also returns its hash or asset id as 16-digit hex |
 | `rivet.set_field(handle, component, field, value, [element])` | writes, returns the previous value |
 
+Some components share one prius between every instance of the actor type
+(`rivet.component(...).shared` is `true`, `prius_behavior` is `ReadOnly`). A
+`set_field` on one of those changes every copy at once; the write still goes
+through, and `rivet.log` says so the first time it happens for that component.
+
 `element` is 1-based and only meaningful for a fixed array field.
 
 The second return value for a string or file field is **hex text, not a number**:
@@ -129,7 +140,7 @@ field's own width and confirmed to land in writable memory first.
 
 | | |
 |---|---|
-| `rivet.component(handle, name)` | `{ address, size, handle, prius, prius_size }`, addresses as hex text |
+| `rivet.component(handle, name)` | `{ address, size, handle, prius, prius_size, prius_behavior, shared }`, addresses as hex text |
 | `rivet.read(address, length)` | `length` bytes as space separated hex, or `nil` if unreadable; capped at 512 |
 
 Not everything a component holds is in its prius. The equipped skin, for one, is
