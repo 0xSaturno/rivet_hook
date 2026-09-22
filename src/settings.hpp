@@ -83,6 +83,10 @@ namespace rivet_hook {
 			std::map<std::string, std::vector<intptr_t>> addresses;
 		} address_cache;
 
+		// set when rivet.toml exists but could not be read. saving would replace the
+		// user's file with defaults, so save() leaves it alone instead.
+		bool read_failed = false;
+
 		static auto
 		load() -> Settings;
 		auto

@@ -2,9 +2,12 @@
 //
 // SPDX-License-Identifier: EUPL-1.2
 
+#include <chrono>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <mutex>
+#include <thread>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -45,6 +48,28 @@ if (tbl.contains(#group) && tbl.at(#group).is_table() && tbl.at(#group).contains
 using toml_table = toml::basic_value<toml::ordered_type_config>::table_type;
 
 namespace rivet_hook {
+	// anchor the file next to the game exe. a bare relative path follows the working
+	// directory, which launchers don't always set, and a miss there looks like a reset.
+	auto
+	settings_path() -> const std::filesystem::path & {
+		static const auto path = [] {
+			std::wstring buffer(MAX_PATH, L'\0');
+			for (;;) {
+				const auto length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+				if (length == 0) {
+					return std::filesystem::path(settings_name);
+				}
+				if (length < buffer.size()) {
+					buffer.resize(length);
+					break;
+				}
+				buffer.resize(buffer.size() * 2);
+			}
+			return std::filesystem::path(buffer).parent_path() / std::filesystem::path(settings_name).filename();
+		}();
+		return path;
+	}
+
 	auto
 	valid_fingerprint(Settings &settings) -> bool {
 		const auto dos = reinterpret_cast<PIMAGE_DOS_HEADER>(g_game_module);
@@ -72,9 +97,23 @@ namespace rivet_hook {
 	Settings::load() -> Settings {
 		Settings settings;
 
-		if (std::filesystem::exists(settings_name)) {
+		const auto &path = settings_path();
+		if (std::error_code ec; std::filesystem::exists(path, ec)) {
 			try {
-				auto tbl = toml::parse(settings_name);
+				// an editor or sync tool can hold the file for a moment while saving it,
+				// retry a few times before giving up on it
+				auto tbl = [&path] {
+					for (auto attempt = 0;; ++attempt) {
+						try {
+							return toml::parse(path);
+						} catch (const toml::file_io_error &) {
+							if (attempt >= 4) {
+								throw;
+							}
+							std::this_thread::sleep_for(std::chrono::milliseconds(50));
+						}
+					}
+				}();
 				if (!tbl.is_table()) {
 					tbl = toml_table();
 				}
@@ -130,19 +169,24 @@ namespace rivet_hook {
 							settings.address_cache.addresses[key] = {};
 
 							for (auto &value : values.as_array()) {
+								if (!value.is_integer()) {
+									continue;
+								}
 								settings.address_cache.addresses[key].emplace_back(value.as_integer() + reinterpret_cast<intptr_t>(g_game_module));
 							}
 						}
 					}
 				}
 			} catch (const std::exception &failure) {
-				// a swallowed parse error silently resets every setting to its
-				// default and then saves that over the user's file, which is very
-				// hard to diagnose from the outside. say something.
-				g_output << "[rivet] could not read " << settings_name << ", falling back to defaults: " << failure.what() << "\n";
+				// run on defaults this session, but never write them over the user's file
+				settings = Settings {};
+				settings.read_failed = true;
+				g_output << "[rivet] could not read " << path.string() << ", using defaults and leaving the file untouched: " << failure.what() << "\n";
 				g_output.flush();
 			} catch (...) {
-				g_output << "[rivet] could not read " << settings_name << ", falling back to defaults\n";
+				settings = Settings {};
+				settings.read_failed = true;
+				g_output << "[rivet] could not read " << path.string() << ", using defaults and leaving the file untouched\n";
 				g_output.flush();
 			}
 		}
@@ -152,6 +196,10 @@ namespace rivet_hook {
 
 	auto
 	Settings::save() const -> void {
+		if (read_failed) {
+			return;
+		}
+
 		toml::basic_value<toml::ordered_type_config> tbl = toml_table();
 
 		CREATE_TABLE(utility);
@@ -213,8 +261,31 @@ namespace rivet_hook {
 			tbl["address_cache"][key] = arr;
 		}
 
-		if (std::ofstream file(settings_name, std::ios::trunc); file.is_open()) {
+		// write a sibling file and swap it in. truncating in place leaves an empty or
+		// half written rivet.toml if the process dies mid save (fini runs during
+		// teardown), and the next launch would then parse that as a reset.
+		const auto &path = settings_path();
+		auto temp = path;
+		temp += L".tmp";
+
+		{
+			std::ofstream file(temp, std::ios::trunc);
+			if (!file.is_open()) {
+				return;
+			}
 			file << tbl;
+			file.flush();
+			if (!file.good()) {
+				file.close();
+				std::error_code ec;
+				std::filesystem::remove(temp, ec);
+				return;
+			}
+		}
+
+		if (!MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+			std::error_code ec;
+			std::filesystem::remove(temp, ec);
 		}
 	}
 } // namespace rivet_hook
