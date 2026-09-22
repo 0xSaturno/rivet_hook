@@ -10,16 +10,15 @@
 
 namespace rivet_hook::scripting {
 	// arms the host when [scripts] enabled is set. no lua runs here: the vm is
-	// built on the first pump, so every chunk executes on the render thread.
+	// built on the first pump, so every chunk executes on the pumping thread.
 	auto
 	init() -> void;
 
 	auto
 	fini() -> void;
 
-	// dispatches the queued keys and then the frame callbacks. called once per
-	// presented frame from present, which is the only place engine state is safe
-	// to touch.
+	// dispatches the queued keys and then the frame callbacks. called once a frame
+	// by game_thread, between actor update passes.
 	auto
 	pump() -> void;
 
@@ -32,12 +31,12 @@ namespace rivet_hook::scripting {
 	auto
 	request_reload() -> void;
 
-	// rebuilds the vm and reloads every script. render thread only.
+	// rebuilds the vm and reloads every script. pump thread only.
 	auto
 	reload() -> void;
 
 	// compiles and runs one chunk. on success out receives the first return value
-	// rendered as text, on failure the error message. render thread only.
+	// rendered as text, on failure the error message. pump thread only.
 	auto
 	exec(const char *source, char *out, size_t out_size) -> bool;
 

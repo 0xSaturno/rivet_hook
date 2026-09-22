@@ -28,15 +28,19 @@ is redirected there too, since the game has no console.
 
 ## Where the code runs
 
-Everything runs on the **render thread**, from the same `present` hook the
-bridge pumps from. That is not a safe point for engine state: the render thread
-most likely presents while the game thread is running the next frame's actor
-and component updates, so a script reads and writes state that is being updated
-at the same moment. A single aligned value (a float field, a transform row)
-usually lands harmlessly, which is why this rarely shows, but a read can see a
-half updated struct and a write can be overwritten within the frame. Moving the
-pump onto the game thread, between updates, is planned; until then treat every
-read as a snapshot and keep writes small. Two further consequences:
+Everything runs on the **game thread**, in the middle of the frame: the hook
+sits on the callback the engine runs between actor update passes, the same slot
+the game uses for its own mid frame actor code. Components are not ticking while
+a script runs, so reads see a settled frame and writes land before the rest of
+the frame's updates pick them up. The bridge pumps from the same place.
+
+When actor updates stop (loading screens) or the hook could not be placed,
+the `present` hook on the render thread stands in after a quarter of a second,
+so the bridge and scripts keep running. That fallback is not a safe point: it
+runs alongside the game thread. `python tools/rivetctl.py ping` shows which
+thread has been pumping (`pump.game_pumps` against `pump.render_pumps`).
+
+Two further consequences:
 
 - A slow script is a visible stutter. Each callback gets `budget_ms`
   milliseconds of wall clock; overrun and it is stopped with an error.
@@ -67,6 +71,8 @@ next frame, not inline.
 | `rivet.scene_ready()` | whether the scene manager is up |
 | `rivet.find_actor(name)` | actor handle by exact name, else first substring match, else `nil` |
 | `rivet.actors([substring], [limit])` | array of handles, `limit` defaults to 64 |
+| `rivet.hero()` | the player actor's handle, from the game's own hero record, or `nil` |
+| `rivet.find_component(class, [limit], [exact])` | handles of actors holding a live component of that class or one derived from it (`exact` skips derived), `limit` defaults to 64 |
 | `rivet.name(handle)` | actor name |
 | `rivet.position(handle)` | `x, y, z` |
 | `rivet.set_position(handle, x, y, z)` | |
@@ -81,6 +87,12 @@ components.
 `find_actor` and `actors` answer `nil` and `{}` while the scene manager is not
 up yet, because a script waits either way. Everything else raises, since a
 handle that does not resolve is a script bug.
+
+**Prefer `rivet.hero` and `rivet.find_component` over a name scan.** Both answer
+from the engine's own indexes: `hero` is a single read, and `find_component`
+walks the live component list (about 60,000 entries in a loaded level) rather
+than every actor slot. `find_component` takes an exact class name, the same
+names `rivet.components` returns.
 
 **Look an actor up once and keep the handle.** Both scans walk the whole scene,
 and both stop at the frame budget and raise if they hit it. Measured in

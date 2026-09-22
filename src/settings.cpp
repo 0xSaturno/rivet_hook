@@ -122,6 +122,7 @@ namespace rivet_hook {
 				LOAD_SETTING(utility, bool, attach_context_log);
 				LOAD_SETTING(utility, bool, attach_log);
 				LOAD_SETTING(utility, bool, unpause_focus);
+				LOAD_SETTING(utility, bool, unpause_input);
 
 				LOAD_SETTING(overlay, bool, enabled);
 				LOAD_SETTING_KEY(overlay, toggle_key);
@@ -216,6 +217,7 @@ namespace rivet_hook {
 		SAVE_SETTING(utility, attach_context_log, "redirect the internal logger context state to rivet.log; disable by default for clutter reasons");
 		SAVE_SETTING(utility, attach_log, "redirect the internal logger to rivet.log; disable by default because the same line is printed frequently");
 		SAVE_SETTING(utility, unpause_focus, "prevent the game from pausing when alt tabbed");
+		SAVE_SETTING(utility, unpause_input, "with unpause_focus, keep reading keyboard and mouse while alt tabbed; off means input stops while another window has focus");
 
 		SAVE_SETTING(overlay, enabled, "enable imgui overlay for various in game stuffs");
 		SAVE_SETTING_KEY(overlay, toggle_key, "what key to toggle the imgui overlay with");
@@ -232,7 +234,7 @@ namespace rivet_hook {
 		SAVE_SETTING(scripts, enabled, "run lua scripts from the scripts directory; disable by default because a script runs arbitrary code inside the game");
 		SAVE_SETTING(scripts, path, "directory the .lua files are loaded from, relative to the game exe");
 		SAVE_SETTING_KEY(scripts, reload_key, "what key to reload every script with");
-		SAVE_SETTING(scripts, budget_ms, "wall clock budget for one script callback in milliseconds; scripts run on the render thread so overrunning this is a visible stutter");
+		SAVE_SETTING(scripts, budget_ms, "wall clock budget for one script callback in milliseconds; scripts run inside the game frame so overrunning this is a visible stutter");
 		SAVE_SETTING(scripts, check_interval, "how many lua instructions run between budget checks");
 		SAVE_SETTING(scripts, error_limit, "consecutive errors before a callback is switched off");
 

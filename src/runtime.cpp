@@ -199,6 +199,26 @@ namespace rivet_hook {
 		return nullptr;
 	}
 
+	// the platform's background query, which is what actually stops gameplay: while
+	// it answers true the frame keeps running but game time does not advance, and
+	// the pads are paused. window focus and activation messages never reach it.
+	auto
+	in_background(void *) -> bool {
+		return false;
+	}
+
+	// the engine's focus query. it only gates input: the keyboard and mouse
+	// updates and mouse look read it each frame, and nothing pauses on it. so
+	// answering the truth blocks input while another window has focus, and
+	// unpause_input answers focused to keep input live.
+	using has_focus_t = bool (*)(void *window);
+	has_focus_t game_has_focus = nullptr;
+
+	auto
+	has_focus(void *window) -> bool {
+		return g_settings.utility.unpause_input || game_has_focus(window);
+	}
+
 	auto
 	engine_init(void* self) -> bool {
 		const auto result = game_engine_init(self);
@@ -294,7 +314,8 @@ namespace rivet_hook {
 			}
 
 			if (g_settings.utility.unpause_focus) {
-				create_hook(UNPAUSE_FOCUS_SIGNATURE, reinterpret_cast<LPVOID>(&return_true), nullptr);
+				create_hook(UNPAUSE_BACKGROUND_SIGNATURE, reinterpret_cast<LPVOID>(&in_background), nullptr);
+				create_hook(UNPAUSE_FOCUS_SIGNATURE, reinterpret_cast<LPVOID>(&has_focus), reinterpret_cast<LPVOID *>(&game_has_focus));
 			}
 
 			g_output << "[rivet] init complete\n";

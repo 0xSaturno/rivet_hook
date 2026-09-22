@@ -18,6 +18,9 @@
 #include "ddl_inspector.hpp"
 #include "ddl_visit.hpp"
 #include "game/scene_manager.hpp"
+#include "game_thread.hpp"
+#include "scene_query.hpp"
+#include "watch.hpp"
 #include "scripting.hpp"
 #include "signature.hpp"
 #include "runtime.hpp"
@@ -296,6 +299,128 @@ namespace rivet_hook::bridge {
 		result["now"] = { actor->object->transform_matrix[3][0], actor->object->transform_matrix[3][1], actor->object->transform_matrix[3][2] };
 		result["frame"] = actor->object->lastModifiedOnFrame;
 		return ok(result);
+	}
+
+	static auto
+	cmd_actor_hero() -> std::string {
+		if (g_SceneManager == nullptr) {
+			return error("scene manager is not available");
+		}
+
+		const auto handle = scene_query::hero();
+		if (handle == 0) {
+			return error("there is no hero right now");
+		}
+
+		return cmd_actor_get({ "actor.get", std::to_string(handle) });
+	}
+
+	// the same hard budget scene.actors answers to
+	static uint64_t g_scan_deadline = 0;
+
+	static auto
+	scan_expired() -> bool {
+		return GetTickCount64() > g_scan_deadline;
+	}
+
+	// actors holding a component of a class, from the engine's component index
+	static auto
+	cmd_find_component(const std::vector<std::string> &args) -> std::string {
+		constexpr int32_t MAX_FOUND = 1024;
+
+		if (g_SceneManager == nullptr) {
+			return error("scene manager is not available");
+		}
+
+		if (args.size() < 2) {
+			return error("usage: scene.find_component <exact class name> [limit] [exact]");
+		}
+
+		auto limit = 200;
+		if (args.size() > 2) {
+			try {
+				limit = std::stoi(args[2]);
+			} catch (const std::exception &) {
+				return error("could not parse limit");
+			}
+		}
+
+		if (limit < 1 || limit > MAX_FOUND) {
+			return error("limit must be between 1 and 1024");
+		}
+
+		const auto exact = args.size() > 3 && args[3] == "exact";
+
+		const auto *type = scene_query::find_class(args[1].c_str());
+		if (type == nullptr) {
+			return error("no component class by that name");
+		}
+
+		const auto started = GetTickCount64();
+		g_scan_deadline = started + 250;
+		uint32_t found[MAX_FOUND];
+		const auto count = scene_query::actors_with(type, !exact, found, limit, scan_expired);
+
+		nlohmann::json::array_t actors;
+		for (int32_t i = 0; i < count; ++i) {
+			const auto *actor = g_SceneManager->ResolveActor(EngineHandle { .value = found[i] });
+			char name[0x100];
+			if (actor == nullptr || !ddl::read_string(actor->GetName(), name, sizeof(name))) {
+				name[0] = '\0';
+			}
+
+			nlohmann::json entry;
+			entry["handle"] = found[i];
+			entry["name"] = name;
+			actors.emplace_back(entry);
+		}
+
+		nlohmann::json result;
+		result["class"] = args[1];
+		result["derived"] = !exact;
+		result["truncated"] = count < 0;
+		result["returned"] = actors.size();
+		result["ms"] = GetTickCount64() - started;
+		result["actors"] = actors;
+		return ok(result);
+	}
+
+	// hardware write watchpoint. a leading + makes the address relative to the
+	// game module, so an rva from a disassembler can be used as is.
+	static auto
+	cmd_mem_watch(const std::vector<std::string> &args) -> std::string {
+		if (args.size() < 2) {
+			return error("usage: mem.watch <address|+rva|off> [length|exec]");
+		}
+
+		if (args[1] == "off") {
+			watch::disarm();
+			return ok(watch::results());
+		}
+
+		uintptr_t address = 0;
+		uint32_t length = 4;
+		const auto execute = args.size() > 2 && args[2] == "exec";
+		try {
+			const auto relative = args[1][0] == '+';
+			address = static_cast<uintptr_t>(std::stoull(relative ? args[1].substr(1) : args[1], nullptr, 0));
+			if (relative) {
+				address += reinterpret_cast<uintptr_t>(g_game_module);
+			}
+
+			if (args.size() > 2 && !execute) {
+				length = static_cast<uint32_t>(std::stoul(args[2], nullptr, 0));
+			}
+		} catch (const std::exception &) {
+			return error("could not parse address or length");
+		}
+
+		std::string reason;
+		if (!watch::arm(address, length, execute, reason)) {
+			return error(reason);
+		}
+
+		return ok(watch::results());
 	}
 
 	// the per component type update callbacks live at the head of ComponentInfo.
@@ -927,6 +1052,22 @@ namespace rivet_hook::bridge {
 			return cmd_component_info(args);
 		}
 
+		if (command == "mem.watch") {
+			return cmd_mem_watch(args);
+		}
+
+		if (command == "mem.watches") {
+			return ok(watch::results());
+		}
+
+		if (command == "actor.hero") {
+			return cmd_actor_hero();
+		}
+
+		if (command == "scene.find_component") {
+			return cmd_find_component(args);
+		}
+
 		if (command == "actor.groups") {
 			return cmd_actor_groups();
 		}
@@ -1016,6 +1157,7 @@ namespace rivet_hook::bridge {
 			nlohmann::json result;
 			result["version"] = RIVET_VERSION;
 			result["overlay"] = g_settings.overlay.enabled;
+			result["pump"] = game_thread::status();
 			return ok(result);
 		}
 
@@ -1059,7 +1201,7 @@ namespace rivet_hook::bridge {
 		if (args[0] == "help") {
 			nlohmann::json result;
 			result["commands"] = nlohmann::json::array_t {
-				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "script.status", "script.reload", "script.exec <lua chunk>"
+				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>"
 			};
 			return ok(result);
 		}
@@ -1194,6 +1336,8 @@ namespace rivet_hook::bridge {
 		if (!g_settings.bridge.enabled) {
 			return;
 		}
+
+		game_thread::install();
 
 		g_done = CreateEvent(nullptr, true, false, nullptr);
 		if (g_done == nullptr) {

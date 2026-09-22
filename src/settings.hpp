@@ -22,6 +22,8 @@ namespace rivet_hook {
 			bool attach_context_log = false;
 			bool attach_log = false;
 			bool unpause_focus = false;
+			// with unpause_focus, keep reading keyboard and mouse while alt tabbed
+			bool unpause_input = false;
 		} utility;
 
 		struct Overlay {

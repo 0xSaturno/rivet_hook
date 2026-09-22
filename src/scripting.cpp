@@ -24,8 +24,10 @@ extern "C" {
 #include "ddl_inspector.hpp"
 #include "ddl_visit.hpp"
 #include "game/scene_manager.hpp"
+#include "game_thread.hpp"
 #include "runtime.hpp"
 #include "runtime_loader.hpp"
+#include "scene_query.hpp"
 #include "vk_enum.hpp"
 
 using namespace rivet_hook::game;
@@ -36,10 +38,10 @@ namespace rivet_hook {
 } // namespace rivet_hook
 
 namespace rivet_hook::scripting {
-	// Everything here runs on the render thread, from the same present hook the
-	// bridge pumps from. That is the only place engine state may be touched, and
-	// it is also why the instruction budget below is not optional: a script that
-	// loops is a frozen game, not a slow script.
+	// Everything here runs on the game thread between actor update passes, from
+	// the same pump the bridge uses (game_thread.cpp). That is also why the
+	// instruction budget below is not optional: a script that loops is a frozen
+	// game, not a slow script.
 	//
 	// The second rule this file lives by: lua is compiled as C, so an error raised
 	// inside the vm leaves through longjmp and does not run C++ destructors on the
@@ -594,6 +596,58 @@ namespace rivet_hook::scripting {
 		return 1;
 	}
 
+	// the actor the game itself treats as the player, straight from the hero
+	// system rather than by name. nil while there is none (menus, loads).
+	static auto
+	l_hero(lua_State *L) -> int {
+		const auto handle = scene_ready() ? scene_query::hero() : 0;
+		if (handle == 0) {
+			lua_pushnil(L);
+			return 1;
+		}
+
+		lua_pushinteger(L, handle);
+		return 1;
+	}
+
+	// every actor holding a live component of the class, or of a class derived
+	// from it unless exact is set. walks the engine's component index, not the
+	// actor slots, so it costs a fraction of find_actor.
+	static auto
+	l_find_component(lua_State *L) -> int {
+		constexpr int32_t MAX_FOUND = 1024;
+
+		const auto *name = luaL_checkstring(L, 1);
+		const auto limit = static_cast<int32_t>(luaL_optinteger(L, 2, 64));
+		const auto exact = lua_toboolean(L, 3) != 0;
+		if (limit < 1 || limit > MAX_FOUND) {
+			luaL_error(L, "limit must be between 1 and %d", MAX_FOUND);
+		}
+
+		lua_newtable(L);
+		if (!scene_ready()) {
+			return 1;
+		}
+
+		const auto *type = scene_query::find_class(name);
+		if (type == nullptr) {
+			luaL_error(L, "there is no component class called %s", name);
+		}
+
+		uint32_t found[MAX_FOUND];
+		const auto count = scene_query::actors_with(type, !exact, found, limit, budget_expired);
+		if (count < 0) {
+			luaL_error(L, "the component scan ran past the frame budget");
+		}
+
+		for (int32_t i = 0; i < count; ++i) {
+			lua_pushinteger(L, found[i]);
+			lua_rawseti(L, -2, i + 1);
+		}
+
+		return 1;
+	}
+
 	static auto
 	l_actors(lua_State *L) -> int {
 		const auto *filter = lua_isnoneornil(L, 1) ? nullptr : luaL_checkstring(L, 1);
@@ -964,6 +1018,8 @@ namespace rivet_hook::scripting {
 		{ "scene_ready", l_scene_ready },
 		{ "find_actor", l_find_actor },
 		{ "actors", l_actors },
+		{ "hero", l_hero },
+		{ "find_component", l_find_component },
 		{ "name", l_name },
 		{ "position", l_position },
 		{ "basis", l_basis },
@@ -1316,6 +1372,8 @@ namespace rivet_hook::scripting {
 		if (!g_settings.scripts.enabled) {
 			return;
 		}
+
+		game_thread::install();
 
 		// nothing is built here. the vm and every chunk in it come up on the first
 		// pump, so a script's top level code runs on the render thread with the

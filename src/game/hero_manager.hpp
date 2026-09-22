@@ -35,6 +35,8 @@ namespace rivet_hook::game {
 	};
 
 	static_assert(sizeof(HeroSystem) == 0x1b4, "HeroSystem size is not 0x1b4");
+	// the handle the game itself reads for "the player"
+	static_assert(offsetof(HeroSystem, currentActorHandle) == 0x168, "HeroSystem currentActorHandle offset is not 0x168");
 
 #pragma pack(pop)
 } // namespace rivet_hook::game

@@ -33,6 +33,13 @@ namespace rivet_hook {
 	// util
 	MAKE_SIGNATURE(REL_NXEXCEPTION_VTABLE, "48 8D 05 ?? ?? ?? ?? 48 8B F1 48 89 01 8B FA 48 8B")
 	MAKE_SIGNATURE(UNPAUSE_FOCUS, "48 83 EC 28 8B 41 ?? 85 C0 74")
+	// the platform's "running in the background" query. polled once a frame; while
+	// it answers true gameplay time is held at zero and the pads are paused
+	MAKE_SIGNATURE(UNPAUSE_BACKGROUND, "40 53 48 83 EC 20 E8 ?? ?? ?? ?? 48 8B C8 48 8B 10 FF 52 68 84 C0 0F 94 C3 E8 ?? ?? ?? ?? 48 8B C8 48 8B 10 FF 52 78 0A C3")
+
+	// the callback the frame hands to the actor update, run on the game thread
+	// between update passes as (pass, phase)
+	MAKE_SIGNATURE(ACTOR_UPDATE_PASS_RUNNING, "83 F9 01 0F 85 ?? ?? ?? ?? 53 48 83 EC 20 80 3D ?? ?? ?? ?? 00 8B DA 75 ?? 85 D2 74 ?? 3B D1")
 
 	constexpr uint32_t NXEXCEPTION_VTABLE_ADDRESS = 0x3;
 	constexpr uint32_t NXEXCEPTION_VTABLE_INIT = 0x1;

@@ -631,7 +631,9 @@ namespace rivet_hook::ddl {
 	// is fragmented enough that the kernel walks a large region tree. Calling it
 	// per actor turned a scan into a multi second stall, so successful lookups
 	// are cached. The cache is cleared once per frame by reset_readable_cache,
-	// which bounds how stale an entry can be to the frame it was taken in.
+	// which bounds how stale an entry can be to the frame it was taken in. It is
+	// per thread: the game thread pump and the overlay on the render thread both
+	// use it, and each resets its own.
 	namespace {
 		struct ReadableRegion {
 			uintptr_t begin;
@@ -640,9 +642,9 @@ namespace rivet_hook::ddl {
 		};
 
 		constexpr int READABLE_CACHE_SIZE = 64;
-		ReadableRegion g_readable_cache[READABLE_CACHE_SIZE] {};
-		int g_readable_cached = 0;
-		int g_readable_next = 0;
+		thread_local ReadableRegion g_readable_cache[READABLE_CACHE_SIZE] {};
+		thread_local int g_readable_cached = 0;
+		thread_local int g_readable_next = 0;
 	} // namespace
 
 	auto

@@ -13,6 +13,7 @@
 #include <MinHook.h>
 
 #include "bridge.hpp"
+#include "game_thread.hpp"
 
 #include "overlay.hpp"
 
@@ -384,9 +385,9 @@ namespace rivet_hook {
 
 	auto STDMETHODCALLTYPE
 	present(IDXGISwapChain3 *pSwapChain, const UINT SyncInterval, const UINT flags) -> HRESULT {
-		// the only point in the frame where walking engine state is safe
-		bridge::pump();
-		scripting::pump();
+		// the bridge and scripts pump on the game thread; this only stands in
+		// while that is missing or quiet
+		game_thread::present_tick();
 
 		if (g_pd3dCommandQueue == nullptr || bricked) {
 			return game_present(pSwapChain, SyncInterval, flags);

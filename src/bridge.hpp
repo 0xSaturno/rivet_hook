@@ -15,8 +15,8 @@ namespace rivet_hook::bridge {
 	auto
 	fini() -> void;
 
-	// runs queued requests that need engine state. called once per presented frame,
-	// which is the only place it is safe to walk the scene.
+	// runs queued requests that need engine state. called once a frame by
+	// game_thread, between actor update passes.
 	auto
 	pump() -> void;
 

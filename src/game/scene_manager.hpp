@@ -19,6 +19,15 @@ namespace rivet_hook::game {
 
 	static_assert(sizeof(SceneComponent) == 0x10, "SceneComponent size is not 0x10");
 
+	// every live component with its class, packed: entries past
+	// componentLookupCount are stale
+	struct ComponentLookup {
+		Component* component;
+		const ComponentInfo* type;
+	};
+
+	static_assert(sizeof(ComponentLookup) == 0x10, "ComponentLookup size is not 0x10");
+
 	// the *Max fields bound the arrays, the *Count fields are how many are live.
 	// live entries are scattered through the array, so walks go to Max and skip
 	// the free slots.
@@ -29,7 +38,11 @@ namespace rivet_hook::game {
 		int32_t componentCount;
 		int32_t componentMaxAllocated;
 		int32_t componentMax;
-		uint8_t unknown3[0x3c];
+		uint8_t unknown3[0xc];
+		ComponentLookup* componentLookups;
+		uint8_t unknown3b[0x1c];
+		int32_t componentLookupCount;
+		uint8_t unknown3c[0x8];
 		Actor* actors;
 		uint8_t unknown4[0x10];
 		int32_t actorCount;
@@ -86,6 +99,8 @@ namespace rivet_hook::game {
 	static_assert(offsetof(SceneManager, components) == 0x1398, "SceneManager components offset is not 0x1398");
 	static_assert(offsetof(SceneManager, componentCount) == 0x13b0, "SceneManager componentCount offset is not 0x13b0");
 	static_assert(offsetof(SceneManager, componentMax) == 0x13b8, "SceneManager componentMax offset is not 0x13b8");
+	static_assert(offsetof(SceneManager, componentLookups) == 0x13c8, "SceneManager componentLookups offset is not 0x13c8");
+	static_assert(offsetof(SceneManager, componentLookupCount) == 0x13ec, "SceneManager componentLookupCount offset is not 0x13ec");
 	static_assert(offsetof(SceneManager, actors) == 0x13f8, "SceneManager actors offset is not 0x13f8");
 	static_assert(offsetof(SceneManager, actorCount) == 0x1410, "SceneManager actorCount offset is not 0x1410");
 	static_assert(offsetof(SceneManager, actorMax) == 0x1414, "SceneManager actorMax offset is not 0x1414");

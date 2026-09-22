@@ -22,6 +22,8 @@ client for it:
 ```bash
 python tools/rivetctl.py ping
 python tools/rivetctl.py scene.actors Rivet
+python tools/rivetctl.py actor.hero
+python tools/rivetctl.py scene.find_component HeroSkinManager
 python tools/rivetctl.py actor.dump 0x1234
 python tools/rivetctl.py mem.read 0x7ff600000000 64
 python tools/rivetctl.py component.capture StrafeCameraMover first on
@@ -30,6 +32,21 @@ python tools/rivetctl.py component.captures
 
 Run `python tools/rivetctl.py help` for the full command list; it comes
 straight from the running hook, so it never drifts out of date.
+
+`mem.watch` answers "what changes this?" with a hardware breakpoint in debug
+register 0 of every thread alive when it is armed. `mem.watch <address> [length]`
+records each instruction that writes the address (reported as the instruction
+after the write, since a data breakpoint traps after it); `mem.watch <address> exec`
+breaks when the instruction at the address runs and keeps the registers of the
+last 16 hits. A leading `+` makes the address relative to the game module, so an
+RVA from a disassembler works as is. `mem.watches` reads the results and
+`mem.watch off` clears it. Threads created after arming are not covered.
+
+```bash
+python tools/rivetctl.py mem.watch +0x6794fa0 4
+python tools/rivetctl.py mem.watches
+python tools/rivetctl.py mem.watch off
+```
 
 ## Wire format
 
@@ -59,9 +76,10 @@ attempt landing in that gap is normal, not a failure.
 
 The pipe runs on its own thread, entirely separate from the engine's frame
 loop. A request that needs engine state (`scene.actors`, `mem.read`, anything
-touching an actor or component) is hoisted onto the render thread: the pipe
-thread stashes the request, wakes the pump, and blocks on an event the pump
-signals once the response is ready. This is why an unresponsive game (not
+touching an actor or component) is hoisted onto the game thread, between actor
+update passes (or onto the render thread while actor updates are stopped, see
+`LUA_SCRIPTING.md`): the pipe thread stashes the request, wakes the pump, and
+blocks on an event the pump signals once the response is ready. This is why an unresponsive game (not
 presenting frames) times out a request after 10 seconds instead of hanging
 the pipe thread forever - the answer to "is the game alive" has to come from
 the game.
