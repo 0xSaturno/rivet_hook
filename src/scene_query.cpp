@@ -57,6 +57,45 @@ namespace rivet_hook::scene_query {
 		return handle.value;
 	}
 
+	auto
+	uid_of(const Actor *actor) -> uint64_t {
+		const auto handle = handle_of(actor);
+		if (handle == 0 || g_SceneManager->actorUids == nullptr) {
+			return 0;
+		}
+
+		return g_SceneManager->actorUids[EngineHandle { .value = handle }.id];
+	}
+
+	auto
+	actor_by_uid(const uint64_t uid) -> uint32_t {
+		if (g_SceneManager == nullptr || uid == 0) {
+			return 0;
+		}
+
+		using by_uid_t = uint32_t *(*)(SceneManager *scene, uint32_t *out, uint64_t uid);
+		static const auto engine_by_uid = reinterpret_cast<by_uid_t>(find_address(ACTOR_HANDLE_BY_UID_SIGNATURE));
+
+		EngineHandle handle {};
+		if (engine_by_uid != nullptr) {
+			engine_by_uid(g_SceneManager, &handle.value, uid);
+		} else {
+			// the probe could not be found, so walk the table: ~95k keys, well
+			// under a millisecond
+			const auto *keys = g_SceneManager->uidKeys;
+			const auto capacity = g_SceneManager->uidCapacity;
+			for (int32_t i = 0; keys != nullptr && i < capacity; ++i) {
+				if (keys[i] == uid) {
+					handle.value = handle_of(g_SceneManager->uidActors[i]);
+					break;
+				}
+			}
+		}
+
+		const auto *actor = handle.value != 0 ? g_SceneManager->ResolveActor(handle) : nullptr;
+		return actor != nullptr && actor->IsValid() ? handle.value : 0;
+	}
+
 	// classes register once at startup, so the name index is built on first use
 	// and only rebuilt if the registered count ever changes
 	auto

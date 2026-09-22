@@ -12,6 +12,7 @@
 
 #include "ddl_visit.hpp"
 #include "runtime.hpp"
+#include "scene_query.hpp"
 
 using namespace rivet_hook::game;
 
@@ -352,6 +353,12 @@ namespace rivet_hook {
 		}
 
 		dump["name"] = actor_name;
+		if (const auto uid = scene_query::uid_of(actor); uid != 0) {
+			char uid_text[24];
+			sprintf_s(uid_text, "%016llx", uid);
+			dump["uid"] = uid_text;
+		}
+
 		dump["generation"] = actor->generation;
 		dump["zone_index"] = actor->zoneIndex;
 		dump["scene_index"] = actor->sceneIndex;

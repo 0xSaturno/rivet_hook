@@ -86,6 +86,9 @@ namespace rivet_hook {
 	constexpr uint32_t REL_SET_TEXT_LANGUAGE_ADDRESS = 0x1;
 	constexpr uint32_t REL_SET_AUDIO_LANGUAGE_ADDRESS = 0xC;
 
+	// (scene, out handle, uid) -> out. the engine's own probe of the uid table
+	MAKE_SIGNATURE(ACTOR_HANDLE_BY_UID, "40 53 48 83 EC 20 48 8B DA C7 02 00 00 00 00 49 8B D0 48 81 C1 D0 74 00 00 E8")
+
 	// actor overlay stuff
 	MAKE_SIGNATURE(HERO_SYSTEM, "48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 33 FF 40 38 B8")
 	MAKE_SIGNATURE(SCENE_MANAGER, "48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 63 75")

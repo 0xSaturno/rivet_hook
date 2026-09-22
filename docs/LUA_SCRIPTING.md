@@ -72,6 +72,8 @@ next frame, not inline.
 | `rivet.find_actor(name)` | actor handle by exact name, else first substring match, else `nil` |
 | `rivet.actors([substring], [limit])` | array of handles, `limit` defaults to 64 |
 | `rivet.hero()` | the player actor's handle, from the game's own hero record, or `nil` |
+| `rivet.uid(handle)` | the actor's uid as 16 digit hex, or `nil` if it has none |
+| `rivet.find_uid(uid)` | the loaded actor with that uid (hex text or integer), or `nil` |
 | `rivet.find_component(class, [limit], [exact])` | handles of actors holding a live component of that class or one derived from it (`exact` skips derived), `limit` defaults to 64 |
 | `rivet.name(handle)` | actor name |
 | `rivet.position(handle)` | `x, y, z` |
@@ -93,6 +95,13 @@ from the engine's own indexes: `hero` is a single read, and `find_component`
 walks the live component list (about 60,000 entries in a loaded level) rather
 than every actor slot. `find_component` takes an exact class name, the same
 names `rivet.components` returns.
+
+**To remember an actor across loads, keep its uid, not its handle.** A handle
+names a slot and goes stale on any level change; a uid is the actor's identity
+and, for zone placed actors (bit 63 set: a leading hex digit of `8` or higher),
+the same every launch. Spawned actors, the hero included, get a runtime uid
+without bit 63, which works for the session but should not be stored.
+`rivet.find_uid` is a single probe of the engine's own uid table.
 
 **Look an actor up once and keep the handle.** Both scans walk the whole scene,
 and both stop at the frame budget and raise if they hit it. Measured in

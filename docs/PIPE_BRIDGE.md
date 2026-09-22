@@ -23,6 +23,7 @@ client for it:
 python tools/rivetctl.py ping
 python tools/rivetctl.py scene.actors Rivet
 python tools/rivetctl.py actor.hero
+python tools/rivetctl.py actor.uid 9a2452401153515b
 python tools/rivetctl.py scene.find_component HeroSkinManager
 python tools/rivetctl.py actor.dump 0x1234
 python tools/rivetctl.py mem.read 0x7ff600000000 64

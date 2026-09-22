@@ -47,7 +47,16 @@ namespace rivet_hook::game {
 		uint8_t unknown4[0x10];
 		int32_t actorCount;
 		int32_t actorMax;
-		uint8_t unknown5[0x6100];
+		uint8_t unknown5[0x60b0];
+		// uid per actor slot, 0 when the actor has none. bit 63 marks an actor
+		// placed by a zone; spawned actors get runtime uids without it.
+		uint64_t* actorUids;
+		// uid -> actor, open addressed. empty slots have key 0.
+		uint64_t* uidKeys;
+		Actor** uidActors;
+		int32_t uidCount;
+		int32_t uidCapacity;
+		uint8_t unknown5b[0x30];
 		ActorGroup* actorGroups;
 		uint8_t unknown6[0x10];
 		int32_t actorGroupCount;
@@ -104,6 +113,9 @@ namespace rivet_hook::game {
 	static_assert(offsetof(SceneManager, actors) == 0x13f8, "SceneManager actors offset is not 0x13f8");
 	static_assert(offsetof(SceneManager, actorCount) == 0x1410, "SceneManager actorCount offset is not 0x1410");
 	static_assert(offsetof(SceneManager, actorMax) == 0x1414, "SceneManager actorMax offset is not 0x1414");
+	static_assert(offsetof(SceneManager, actorUids) == 0x74c8, "SceneManager actorUids offset is not 0x74c8");
+	static_assert(offsetof(SceneManager, uidKeys) == 0x74d0, "SceneManager uidKeys offset is not 0x74d0");
+	static_assert(offsetof(SceneManager, uidCapacity) == 0x74e4, "SceneManager uidCapacity offset is not 0x74e4");
 	static_assert(offsetof(SceneManager, actorGroups) == 0x7518, "SceneManager actorGroups offset is not 0x7518");
 	static_assert(offsetof(SceneManager, actorGroupCount) == 0x7530, "SceneManager actorGroupCount offset is not 0x7530");
 	static_assert(offsetof(SceneManager, actorGroupMax) == 0x7534, "SceneManager actorGroupMax offset is not 0x7534");

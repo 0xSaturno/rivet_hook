@@ -100,6 +100,18 @@ namespace rivet_hook::bridge {
 
 	// ------------------------------------------------------- engine thread --
 
+	// uids as hex text: they run past what a json number survives in most readers
+	static auto
+	uid_text(const uint64_t uid) -> nlohmann::json {
+		if (uid == 0) {
+			return nullptr;
+		}
+
+		char text[24];
+		sprintf_s(text, "%016llx", uid);
+		return text;
+	}
+
 	static auto
 	cmd_scene_actors(const std::vector<std::string> &args) -> std::string {
 		if (g_SceneManager == nullptr || g_SceneManager->actors == nullptr) {
@@ -162,6 +174,7 @@ namespace rivet_hook::bridge {
 			entry["index"] = index;
 			entry["generation"] = actor->generation;
 			entry["name"] = name;
+			entry["uid"] = uid_text(scene_query::uid_of(actor));
 			entry["flags"] = DescribeActorFlags(actor->flags);
 			entry["components"] = actor->componentCount;
 			entry["update_children"] = actor->updateChildrenCount;
@@ -239,6 +252,7 @@ namespace rivet_hook::bridge {
 		nlohmann::json result;
 		result["handle"] = handle.value;
 		result["name"] = name;
+		result["uid"] = uid_text(scene_query::uid_of(actor));
 		result["generation"] = actor->generation;
 		result["flags"] = DescribeActorFlags(actor->flags);
 		result["components"] = actor->componentCount;
@@ -299,6 +313,31 @@ namespace rivet_hook::bridge {
 		result["now"] = { actor->object->transform_matrix[3][0], actor->object->transform_matrix[3][1], actor->object->transform_matrix[3][2] };
 		result["frame"] = actor->object->lastModifiedOnFrame;
 		return ok(result);
+	}
+
+	static auto
+	cmd_actor_uid(const std::vector<std::string> &args) -> std::string {
+		if (g_SceneManager == nullptr) {
+			return error("scene manager is not available");
+		}
+
+		if (args.size() < 2) {
+			return error("usage: actor.uid <uid hex>");
+		}
+
+		uint64_t uid = 0;
+		try {
+			uid = std::stoull(args[1], nullptr, 16);
+		} catch (const std::exception &) {
+			return error("could not parse the uid, it has to be hex");
+		}
+
+		const auto handle = scene_query::actor_by_uid(uid);
+		if (handle == 0) {
+			return error("no loaded actor has that uid");
+		}
+
+		return cmd_actor_get({ "actor.get", std::to_string(handle) });
 	}
 
 	static auto
@@ -1060,6 +1099,10 @@ namespace rivet_hook::bridge {
 			return ok(watch::results());
 		}
 
+		if (command == "actor.uid") {
+			return cmd_actor_uid(args);
+		}
+
 		if (command == "actor.hero") {
 			return cmd_actor_hero();
 		}
@@ -1201,7 +1244,7 @@ namespace rivet_hook::bridge {
 		if (args[0] == "help") {
 			nlohmann::json result;
 			result["commands"] = nlohmann::json::array_t {
-				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>"
+				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>"
 			};
 			return ok(result);
 		}

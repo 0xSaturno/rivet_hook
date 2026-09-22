@@ -648,6 +648,49 @@ namespace rivet_hook::scripting {
 		return 1;
 	}
 
+	// the actor's uid as 16 digit hex text, or nil for an actor without one.
+	// text for the same reason asset ids are: uids run past 2^53.
+	static auto
+	l_uid(lua_State *L) -> int {
+		const auto *actor = resolve_actor(L, 1);
+		const auto uid = scene_query::uid_of(actor);
+		if (uid == 0) {
+			lua_pushnil(L);
+			return 1;
+		}
+
+		char text[24];
+		_snprintf_s(text, sizeof(text), _TRUNCATE, "%016llx", uid);
+		lua_pushstring(L, text);
+		return 1;
+	}
+
+	// the loaded actor with this uid, or nil. takes the hex text rivet.uid hands
+	// out (a 0x prefix is fine) or an integer.
+	static auto
+	l_find_uid(lua_State *L) -> int {
+		uint64_t uid = 0;
+		if (lua_type(L, 1) == LUA_TNUMBER) {
+			uid = static_cast<uint64_t>(luaL_checkinteger(L, 1));
+		} else {
+			const auto *text = luaL_checkstring(L, 1);
+			char *end = nullptr;
+			uid = _strtoui64(text, &end, 16);
+			if (end == text || *end != '\0') {
+				luaL_error(L, "could not parse the uid, it has to be hex");
+			}
+		}
+
+		const auto handle = scene_ready() ? scene_query::actor_by_uid(uid) : 0;
+		if (handle == 0) {
+			lua_pushnil(L);
+			return 1;
+		}
+
+		lua_pushinteger(L, handle);
+		return 1;
+	}
+
 	static auto
 	l_actors(lua_State *L) -> int {
 		const auto *filter = lua_isnoneornil(L, 1) ? nullptr : luaL_checkstring(L, 1);
@@ -1019,6 +1062,8 @@ namespace rivet_hook::scripting {
 		{ "find_actor", l_find_actor },
 		{ "actors", l_actors },
 		{ "hero", l_hero },
+		{ "uid", l_uid },
+		{ "find_uid", l_find_uid },
 		{ "find_component", l_find_component },
 		{ "name", l_name },
 		{ "position", l_position },

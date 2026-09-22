@@ -19,6 +19,16 @@ namespace rivet_hook::scene_query {
 	auto
 	hero() -> uint32_t;
 
+	// the actor's uid, 0 when it has none. zone placed actors have bit 63 set and
+	// keep their uid across loads and launches, which handles do not; spawned
+	// actors, the hero among them, get a runtime uid without it.
+	auto
+	uid_of(const game::Actor *actor) -> uint64_t;
+
+	// the live actor with this uid, 0 when none is loaded
+	auto
+	actor_by_uid(uint64_t uid) -> uint32_t;
+
 	// a registered component class by exact name, null if there is none
 	auto
 	find_class(const char *name) -> const game::ComponentInfo *;
