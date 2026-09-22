@@ -148,6 +148,12 @@ namespace rivet_hook::ddl {
 	auto
 	is_readable(const void *ptr, size_t size) -> bool;
 
+	// is_readable without the frame cache. that cache is only safe on the thread
+	// that resets it, so anything running on an engine worker thread - a component
+	// update detour, say - has to ask the kernel directly instead.
+	auto
+	is_readable_uncached(const void *ptr, size_t size) -> bool;
+
 	// the same, for pages that also accept a store. a write into live engine data
 	// has to ask this separately: plenty of readable engine memory is mapped read
 	// only, and a blind store into it faults instead of failing.

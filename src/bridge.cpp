@@ -421,6 +421,27 @@ namespace rivet_hook::bridge {
 
 	constexpr int MAX_DETOURS = 8;
 
+	// how many calls are recorded once capture is armed, and how much of the
+	// component array is copied out of each. eight is enough to see whether the
+	// arguments vary between calls without turning a hot update into a memcpy loop.
+	constexpr int MAX_CAPTURES = 8;
+	constexpr uint32_t CAPTURE_BYTES = 64;
+
+	// one recorded call. the bytes matter more than the pointer: by the time this
+	// is read back over the bridge the component array may have been recycled, so
+	// reading through the pointer later would be a stale read.
+	struct Capture {
+		Capture() = default;
+		Capture(Capture &&) = delete; // atomics are not movable
+
+		void *components = nullptr;
+		uint32_t count = 0;
+		float delta = 0.0f;
+		void *caller = nullptr;
+		std::atomic_uint32_t bytes_read = 0;
+		uint8_t bytes[CAPTURE_BYTES] {};
+	};
+
 	struct Detour {
 		Detour() = default;
 		Detour(Detour &&) = delete; // atomics are not movable
@@ -431,11 +452,42 @@ namespace rivet_hook::bridge {
 		std::atomic_uint64_t calls = 0;
 		std::atomic_uint64_t skipped = 0;
 		std::atomic_bool skip = false;
+		std::atomic_bool capturing = false;
+		std::atomic_int captured = 0;
+		Capture captures[MAX_CAPTURES];
 		void *caller = nullptr;
 		bool installed = false;
 	};
 
 	static Detour g_detours[MAX_DETOURS];
+
+	// runs on whatever thread dispatches component updates, which is not the render
+	// thread. that rules out ddl::is_readable, whose region cache is only safe on
+	// the thread that resets it - hence the uncached probe.
+	static auto
+	capture_arguments(Detour &detour, void *components, const uint32_t count, const float delta, void *caller) -> void {
+		const auto slot = detour.captured.fetch_add(1);
+		if (slot >= MAX_CAPTURES) {
+			detour.capturing = false;
+			return;
+		}
+
+		auto &capture = detour.captures[slot];
+		capture.components = components;
+		capture.count = count;
+		capture.delta = delta;
+		capture.caller = caller;
+
+		if (ddl::is_readable_uncached(components, CAPTURE_BYTES)) {
+			memcpy(capture.bytes, components, CAPTURE_BYTES);
+			// published last: a reader only trusts the bytes once this is non zero
+			capture.bytes_read.store(CAPTURE_BYTES, std::memory_order_release);
+		}
+
+		if (slot + 1 >= MAX_CAPTURES) {
+			detour.capturing = false;
+		}
+	}
 
 	static auto
 	dispatch_detour(const int index, void *components, const uint32_t count, const float delta, void *caller) -> void * {
@@ -447,6 +499,10 @@ namespace rivet_hook::bridge {
 		// photo mode every gameplay component stops being dispatched at once.
 		if (detour.caller == nullptr) {
 			detour.caller = caller;
+		}
+
+		if (detour.capturing.load(std::memory_order_relaxed)) {
+			capture_arguments(detour, components, count, delta, caller);
 		}
 
 		if (detour.skip) {
@@ -506,6 +562,8 @@ namespace rivet_hook::bridge {
 		entry["skipping"] = detour.skip.load();
 		entry["calls"] = detour.calls.load();
 		entry["skipped"] = detour.skipped.load();
+		entry["capturing"] = detour.capturing.load();
+		entry["captured"] = detour.captured.load() < MAX_CAPTURES ? detour.captured.load() : MAX_CAPTURES;
 		if (detour.caller != nullptr) {
 			const auto base = reinterpret_cast<uintptr_t>(g_game_module);
 			const auto address = reinterpret_cast<uintptr_t>(detour.caller);
@@ -593,6 +651,108 @@ namespace rivet_hook::bridge {
 
 		const auto index = installed_detour(args[1].c_str(), args[2].c_str());
 		return ok(describe_detour(g_detours[index], index));
+	}
+
+	// the arguments the dispatcher passed, as json. read on the engine thread, so
+	// the cached is_readable behind hex_dump is fine here.
+	static auto
+	describe_capture(const Capture &capture) -> nlohmann::json {
+		const auto base = reinterpret_cast<uintptr_t>(g_game_module);
+
+		char text[64];
+		nlohmann::json entry;
+
+		_snprintf_s(text, sizeof(text), _TRUNCATE, "0x%016llx", reinterpret_cast<uintptr_t>(capture.components));
+		entry["components"] = text;
+		entry["count"] = capture.count;
+		entry["delta"] = capture.delta;
+
+		if (capture.caller != nullptr) {
+			const auto address = reinterpret_cast<uintptr_t>(capture.caller);
+			_snprintf_s(text, sizeof(text), _TRUNCATE, "0x%016llx (+0x%llx)", address, address - base);
+			entry["caller"] = text;
+		}
+
+		if (const auto read = capture.bytes_read.load(std::memory_order_acquire); read > 0) {
+			entry["bytes"] = ddl::hex_dump(capture.bytes, read);
+		} else {
+			entry["bytes"] = nullptr;
+			entry["unreadable"] = true;
+		}
+
+		return entry;
+	}
+
+	// arms argument capture on a detour, installing one if it is not there yet.
+	// the counters alone cannot answer what an update is being handed.
+	static auto
+	cmd_component_capture(const std::vector<std::string> &args) -> std::string {
+		if (args.size() < 4) {
+			return error("usage: component.capture <exact name> <first|first_results|middle|last|async|async_results> <on|off>");
+		}
+
+		const auto arm = args[3] == "on" || args[3] == "1";
+
+		auto index = installed_detour(args[1].c_str(), args[2].c_str());
+		if (index < 0) {
+			// installed without skipping: observing an update must not change it
+			char failure[0x200];
+			if (!set_detour(args[1].c_str(), args[2].c_str(), false, failure, sizeof(failure))) {
+				return error(failure);
+			}
+
+			index = installed_detour(args[1].c_str(), args[2].c_str());
+			if (index < 0) {
+				return error("the detour was installed but could not be found again");
+			}
+		}
+
+		auto &detour = g_detours[index];
+		if (arm) {
+			// reset before arming, so a second run does not read the first one back
+			for (auto &capture : detour.captures) {
+				capture.bytes_read.store(0, std::memory_order_relaxed);
+			}
+
+			detour.captured = 0;
+		}
+
+		detour.capturing = arm;
+		return ok(describe_detour(detour, index));
+	}
+
+	static auto
+	cmd_component_captures(const std::vector<std::string> &args) -> std::string {
+		nlohmann::json::array_t entries;
+		for (auto i = 0; i < MAX_DETOURS; ++i) {
+			auto &detour = g_detours[i];
+			if (!detour.installed) {
+				continue;
+			}
+
+			if (args.size() > 1 && detour.component != args[1]) {
+				continue;
+			}
+
+			if (args.size() > 2 && detour.slot != args[2]) {
+				continue;
+			}
+
+			auto entry = describe_detour(detour, i);
+
+			nlohmann::json::array_t captures;
+			const auto taken = detour.captured.load();
+			for (auto slot = 0; slot < (taken < MAX_CAPTURES ? taken : MAX_CAPTURES); ++slot) {
+				captures.emplace_back(describe_capture(detour.captures[slot]));
+			}
+
+			entry["captures"] = captures;
+			entries.emplace_back(entry);
+		}
+
+		nlohmann::json result;
+		result["detours"] = entries;
+		return ok(result);
 	}
 
 	static auto
@@ -739,6 +899,14 @@ namespace rivet_hook::bridge {
 		if (command == "component.detours") {
 			return cmd_component_detours();
 		}
+
+		if (command == "component.capture") {
+			return cmd_component_capture(args);
+		}
+
+		if (command == "component.captures") {
+			return cmd_component_captures(args);
+		}
 		if (command == "component.info") {
 			return cmd_component_info(args);
 		}
@@ -875,7 +1043,7 @@ namespace rivet_hook::bridge {
 		if (args[0] == "help") {
 			nlohmann::json result;
 			result["commands"] = nlohmann::json::array_t {
-				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "mem.read <address> <length>", "script.status", "script.reload", "script.exec <lua chunk>"
+				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "script.status", "script.reload", "script.exec <lua chunk>"
 			};
 			return ok(result);
 		}
