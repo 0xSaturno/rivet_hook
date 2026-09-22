@@ -24,6 +24,7 @@ extern "C" {
 #include "ddl_visit.hpp"
 #include "game/scene_manager.hpp"
 #include "runtime.hpp"
+#include "runtime_loader.hpp"
 #include "vk_enum.hpp"
 
 using namespace rivet_hook::game;
@@ -49,6 +50,13 @@ namespace rivet_hook::scripting {
 	constexpr int MAX_KEY_QUEUE = 64;
 	// the actor scan checks its budget every this many + 1 entries
 	constexpr int32_t SCAN_CHECK_MASK = 0x3FF;
+
+	// cap on rivet.read, which formats three characters per byte
+	constexpr uint32_t MAX_READ_BYTES = 512;
+
+	// cap on rivet.write. deliberately small: this is for poking a field to see
+	// what it does, not for transplanting a struct.
+	constexpr uint32_t MAX_WRITE_BYTES = 64;
 
 	struct Callback {
 		int ref = LUA_NOREF;
@@ -121,6 +129,20 @@ namespace rivet_hook::scripting {
 		memcpy(out + at, text, take);
 		at += take;
 		out[at] = '\0';
+	}
+
+	static auto
+	is_hex(const char c) -> bool {
+		return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+	}
+
+	static auto
+	hex_value(const char c) -> int {
+		if (c >= '0' && c <= '9') {
+			return c - '0';
+		}
+
+		return (c >= 'a' ? c - 'a' : c - 'A') + 10;
 	}
 
 	static auto
@@ -256,13 +278,19 @@ namespace rivet_hook::scripting {
 		EngineHandle handle {};
 		handle.value = value;
 
+		// lua_pushfstring, which luaL_error formats through, only understands
+		// %s %d %f %p %c %U and %%. A %x there raises "invalid option" and the
+		// real message is lost, so the handle is rendered before it is passed.
+		char handle_text[16];
+		_snprintf_s(handle_text, sizeof(handle_text), _TRUNCATE, "0x%08x", value);
+
 		if (static_cast<int32_t>(handle.id) >= g_SceneManager->actorCount) {
-			luaL_error(L, "actor handle 0x%x is past the end of the scene", value);
+			luaL_error(L, "actor handle %s is past the end of the scene", handle_text);
 		}
 
 		auto *actor = &g_SceneManager->actors[handle.id];
 		if (!ddl::is_readable(actor, sizeof(Actor)) || actor->type != handle.type) {
-			luaL_error(L, "no actor for handle 0x%x", value);
+			luaL_error(L, "no actor for handle %s", handle_text);
 		}
 
 		return actor;
@@ -271,9 +299,12 @@ namespace rivet_hook::scripting {
 	// the named component on an actor, with the live prius instance behind it.
 	// prius is left null when the component carries no ddl data.
 	static auto
-	find_component(const Actor *actor, const char *name, const DDLTypeInfo **prius, uint8_t **data) -> const Component * {
+	find_component(const Actor *actor, const char *name, const DDLTypeInfo **prius, uint8_t **data, const ComponentInfo **out_type = nullptr) -> const Component * {
 		*prius = nullptr;
 		*data = nullptr;
+		if (out_type != nullptr) {
+			*out_type = nullptr;
+		}
 
 		if (actor->components == nullptr || actor->componentCount <= 0) {
 			return nullptr;
@@ -297,6 +328,10 @@ namespace rivet_hook::scripting {
 			if (const auto *info = type->prius; info != nullptr && ddl::is_readable(info, sizeof(DDLTypeInfo)) && info->field_count > 0) {
 				*prius = info;
 				*data = ddl::prius_data(instance->ddlPriusData, info->allocation_size);
+			}
+
+			if (out_type != nullptr) {
+				*out_type = type;
 			}
 
 			return instance;
@@ -617,6 +652,27 @@ namespace rivet_hook::scripting {
 		return 3;
 	}
 
+	// The actor's orientation, as the three basis rows of its transform. Row 3 is
+	// the translation that rivet.position reads, so rows 0..2 are the axes.
+	// All three are returned rather than a single 'forward' because which row is
+	// forward is a convention question, and a script can settle it by looking at
+	// the numbers instead of the caller guessing.
+	static auto
+	l_basis(lua_State *L) -> int {
+		const auto *actor = resolve_actor(L, 1);
+		if (actor->object == nullptr || !ddl::is_readable(actor->object, sizeof(SceneObject))) {
+			luaL_error(L, "this actor has no readable scene object");
+		}
+
+		for (auto row = 0; row < 3; ++row) {
+			for (auto axis = 0; axis < 3; ++axis) {
+				lua_pushnumber(L, actor->object->transform_matrix[row][axis]);
+			}
+		}
+
+		return 9;
+	}
+
 	// the transform is a byproduct: the write lands and the engine stamps over it
 	// within the frame. useful for a nudge, not for holding a position.
 	static auto
@@ -695,6 +751,132 @@ namespace rivet_hook::scripting {
 		return push_value(L, previous);
 	}
 
+	// where a component instance actually lives. plenty of runtime state - which
+	// skin is equipped, for one - is held in the instance rather than in the
+	// authored prius, and rivet.field cannot see any of it. addresses come back as
+	// hex text because they run past what a lua number counts exactly.
+	static auto
+	l_component(lua_State *L) -> int {
+		const auto *actor = resolve_actor(L, 1);
+		const auto *name = luaL_checkstring(L, 2);
+
+		const DDLTypeInfo *prius = nullptr;
+		uint8_t *data = nullptr;
+		const ComponentInfo *type = nullptr;
+		const auto *instance = find_component(actor, name, &prius, &data, &type);
+		if (instance == nullptr) {
+			luaL_error(L, "this actor has no %s component", name);
+		}
+
+		char text[32];
+		lua_newtable(L);
+
+		_snprintf_s(text, sizeof(text), _TRUNCATE, "%016llx", reinterpret_cast<uintptr_t>(instance));
+		lua_pushstring(L, text);
+		lua_setfield(L, -2, "address");
+
+		lua_pushinteger(L, type != nullptr ? type->size : 0);
+		lua_setfield(L, -2, "size");
+
+		lua_pushinteger(L, instance->handle.value);
+		lua_setfield(L, -2, "handle");
+
+		if (data != nullptr) {
+			_snprintf_s(text, sizeof(text), _TRUNCATE, "%016llx", reinterpret_cast<uintptr_t>(data));
+			lua_pushstring(L, text);
+			lua_setfield(L, -2, "prius");
+			lua_pushinteger(L, prius->allocation_size);
+			lua_setfield(L, -2, "prius_size");
+		}
+
+		return 1;
+	}
+
+	// raw bytes as hex text, for diffing a live instance against itself over time.
+	// bounded hard: this runs inside the frame and is meant for watching a struct,
+	// not for trawling the address space.
+	static auto
+	l_read(lua_State *L) -> int {
+		const auto *address_text = luaL_checkstring(L, 1);
+		const auto length = static_cast<uint32_t>(luaL_checkinteger(L, 2));
+		if (length == 0 || length > MAX_READ_BYTES) {
+			luaL_error(L, "length must be between 1 and %d", MAX_READ_BYTES);
+		}
+
+		char *end = nullptr;
+		const auto address = static_cast<uintptr_t>(_strtoui64(address_text, &end, 16));
+		if (end == address_text || address == 0) {
+			luaL_error(L, "could not parse the address, it has to be hex");
+		}
+
+		char text[MAX_READ_BYTES * 3 + 1];
+		{
+			// hex_dump owns a std::string, so it is copied out and gone before
+			// anything below can raise
+			const auto dump = ddl::hex_dump(reinterpret_cast<const uint8_t *>(address), length);
+			_snprintf_s(text, sizeof(text), _TRUNCATE, "%s", dump.c_str());
+		}
+
+		if (text[0] == '\0') {
+			lua_pushnil(L);
+			return 1;
+		}
+
+		lua_pushstring(L, text);
+		return 1;
+	}
+
+	// writes raw bytes into a live instance. this is the blunt counterpart to
+	// set_field: set_field knows the field's width and range and refuses anything
+	// that does not fit, and this knows nothing at all. it exists because runtime
+	// state that no prius describes cannot be reached any other way, and proving
+	// what a field does means writing it. confirmed writable before the store, but
+	// nothing checks that the bytes mean anything.
+	static auto
+	l_write(lua_State *L) -> int {
+		const auto *address_text = luaL_checkstring(L, 1);
+		const auto *bytes_text = luaL_checkstring(L, 2);
+
+		char *parsed = nullptr;
+		const auto address = static_cast<uintptr_t>(_strtoui64(address_text, &parsed, 16));
+		if (parsed == address_text || address == 0) {
+			luaL_error(L, "could not parse the address, it has to be hex");
+		}
+
+		uint8_t bytes[MAX_WRITE_BYTES];
+		uint32_t count = 0;
+		for (const auto *cursor = bytes_text; *cursor != '\0';) {
+			if (*cursor == ' ') {
+				++cursor;
+				continue;
+			}
+
+			if (count >= MAX_WRITE_BYTES) {
+				luaL_error(L, "at most %d bytes per write", static_cast<int>(MAX_WRITE_BYTES));
+			}
+
+			if (!is_hex(cursor[0]) || !is_hex(cursor[1])) {
+				luaL_error(L, "the bytes have to be space separated hex pairs");
+			}
+
+			bytes[count++] = static_cast<uint8_t>(hex_value(cursor[0]) * 16 + hex_value(cursor[1]));
+			cursor += 2;
+		}
+
+		if (count == 0) {
+			luaL_error(L, "there were no bytes to write");
+		}
+
+		auto *at = reinterpret_cast<uint8_t *>(address);
+		if (!ddl::is_writable(at, count)) {
+			luaL_error(L, "%s is not writable", address_text);
+		}
+
+		memcpy(at, bytes, count);
+		lua_pushinteger(L, count);
+		return 1;
+	}
+
 	static auto
 	l_detour(lua_State *L) -> int {
 		const auto *component = luaL_checkstring(L, 1);
@@ -730,6 +912,19 @@ namespace rivet_hook::scripting {
 		return 1;
 	}
 
+	// publishes text into a ui slot the hud document can poll. a cohtml view
+	// cannot be pushed to from here - there is no View pointer to call
+	// TriggerEvent on - so the page fetches a file instead and this is what
+	// keeps that file current. answers whether the slot took it.
+	static auto
+	l_ui_publish(lua_State *L) -> int {
+		const auto slot = static_cast<int>(luaL_checkinteger(L, 1));
+		size_t length = 0;
+		const auto *text = luaL_checklstring(L, 2, &length);
+		lua_pushboolean(L, AssetLoader::publish_ui_slot(slot, text, length) ? 1 : 0);
+		return 1;
+	}
+
 	static const luaL_Reg g_api[] = {
 		{ "log", l_log },
 		{ "on_frame", l_on_frame },
@@ -743,12 +938,17 @@ namespace rivet_hook::scripting {
 		{ "actors", l_actors },
 		{ "name", l_name },
 		{ "position", l_position },
+		{ "basis", l_basis },
 		{ "set_position", l_set_position },
 		{ "components", l_components },
 		{ "field", l_field },
 		{ "set_field", l_set_field },
+		{ "component", l_component },
+		{ "read", l_read },
+		{ "write", l_write },
 		{ "detour", l_detour },
 		{ "dump", l_dump },
+		{ "ui_publish", l_ui_publish },
 		{ nullptr, nullptr },
 	};
 

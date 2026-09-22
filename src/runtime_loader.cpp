@@ -537,6 +537,48 @@ namespace rivet_hook {
 		}
 	}
 
+	// Buffers behind the ui slots. Registered once in init, then only rewritten
+	// in place, so the mod asset map is never mutated while loader threads read
+	// it. Null until register_ui_slots has run.
+	std::array<uint8_t *, AssetLoader::ui_slot_count> ui_slot_buffers = {};
+
+	// Slots live beside the HUD document so a page can fetch them by bare name.
+	// The asset id hash is case insensitive - the stage ships lowercase paths
+	// while HUD.html asks for "css/MiniMap.css" and that already resolves - so
+	// the lowercase spelling here is fine.
+	auto
+	register_ui_slots() -> void {
+		if (game_create_asset_id == nullptr) {
+			g_output << "[loader] no create_asset_id, ui slots unavailable\n";
+			return;
+		}
+
+		for (auto slot = 0; slot < AssetLoader::ui_slot_count; ++slot) {
+			char game_path[64];
+			_snprintf_s(game_path, sizeof(game_path), _TRUNCATE, "ui/loaded/exported/hud/mm_%d.json", slot);
+
+			AssetId asset_id = 0;
+			game_create_asset_id(&asset_id, game_path);
+
+			// start as valid, empty json so a poll before the first publish
+			// parses instead of erroring
+			auto *buffer = new uint8_t[AssetLoader::ui_slot_size];
+			memset(buffer, ' ', AssetLoader::ui_slot_size);
+			memcpy(buffer, "{}", 2);
+
+			populate_mod_asset(game_path, game_path, asset_id, AssetType::Built, AssetLanguage::None, buffer, AssetLoader::ui_slot_size);
+
+			// keep the pointer only if it actually landed in the map
+			if (const auto *file = find_mod_asset(asset_id, AssetType::Built, AssetLanguage::None); file != nullptr && file->valid()) {
+				ui_slot_buffers[slot] = buffer;
+			} else {
+				g_output << "[loader] ui slot " << std::dec << slot << " failed to register\n";
+			}
+		}
+
+		g_output << "[loader] registered " << std::dec << AssetLoader::ui_slot_count << " ui slots of " << AssetLoader::ui_slot_size << " bytes\n";
+	}
+
 	auto
 	load_mod_assets_overstrike_stage(const std::filesystem::path &path) -> void {
 		auto zip = mz_zip_reader_create();
@@ -935,6 +977,24 @@ namespace rivet_hook {
 	}
 
 	auto
+	AssetLoader::publish_ui_slot(const int slot, const char *text, const size_t length) -> bool {
+		if (slot < 0 || slot >= ui_slot_count || text == nullptr) {
+			return false;
+		}
+
+		auto *buffer = ui_slot_buffers[slot];
+		if (buffer == nullptr || length > ui_slot_size) {
+			return false;
+		}
+
+		// pad first, so a reader that catches this between the two writes sees
+		// trailing spaces rather than the tail of the previous, longer document
+		memset(buffer + length, ' ', ui_slot_size - length);
+		memcpy(buffer, text, length);
+		return true;
+	}
+
+	auto
 	AssetLoader::init() -> void {
 		if (runtime_loader_ready) {
 			return;
@@ -962,6 +1022,7 @@ namespace rivet_hook {
 		}
 
 		load_mod_assets();
+		register_ui_slots();
 
 		#define LOAD_FUNC_ADDRESS_RAW(var, name, sig) \
 			if (var = find_address(sig); !var) { \
