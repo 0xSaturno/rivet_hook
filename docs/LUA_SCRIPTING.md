@@ -85,6 +85,23 @@ cached handle with `rivet.name` instead of scanning again. Handles do not
 survive a level change and differ every launch, so they are worth re-checking,
 just not by scanning.
 
+**Guard the calls that raise, or a routine event kills the callback.** A stale
+handle raises rather than answering `nil`, and a callback is switched off after
+`scripts.error_limit` consecutive errors. A handle goes stale on any level
+change or rift, which is normal play, so an unguarded `rivet.position` on a
+cached handle is a callback that dies the first time the player travels:
+
+```lua
+local ok, x, y, z = pcall(rivet.position, hero)
+if not ok then
+  hero = nil       -- re-resolve on a later frame
+  return
+end
+```
+
+The same applies to the scans: they raise when they overrun the budget, which is
+a bad frame rather than a bug, so `pcall` those too and try again later.
+
 ### Prius fields
 
 | | |
@@ -108,6 +125,22 @@ types do not survive a round trip through a Lua number, so all of those are
 refused rather than silently mangled. Every write is range checked against the
 field's own width and confirmed to land in writable memory first.
 
+### Raw instance memory
+
+| | |
+|---|---|
+| `rivet.component(handle, name)` | `{ address, size, handle, prius, prius_size }`, addresses as hex text |
+| `rivet.read(address, length)` | `length` bytes as space separated hex, or `nil` if unreadable; capped at 512 |
+
+Not everything a component holds is in its prius. The equipped skin, for one, is
+runtime state living in the instance, and `rivet.field` cannot see any of it.
+These two read the instance directly so a script can diff it against itself over
+time - see [`scripts/watch_skin.lua`](../scripts/watch_skin.lua), which learns
+which offsets churn every frame and then reports only the ones that do not.
+
+Addresses are hex text for the same reason asset ids are: they run past what a
+Lua number counts exactly.
+
 ### Components
 
 | | |
@@ -118,6 +151,51 @@ Slots are `first`, `first_results`, `middle`, `last`, `async`,
 `async_results`. This shares the bridge's detour pool, so `component.detours`
 over the bridge reports the call and skip counters for anything a script
 installed.
+
+### The game UI
+
+| | |
+|---|---|
+| `rivet.ui_publish(slot, text)` | write utf-8 text into a ui slot a cohtml page can poll; `true` if it took |
+
+`slot` is `0..7`, and each holds 1024 bytes. They are registered during asset
+load as ordinary mod assets at `ui/loaded/exported/hud/mm_0.json` through
+`mm_7.json`, so a page reaches them the way it reaches any other file it ships
+with.
+
+Publishing does not create or replace an asset, it only rewrites the bytes of a
+buffer already in the table. That is deliberate: the asset map is read by loader
+threads while a script runs on the render thread, and never touching the map
+means no lock is needed. Text shorter than the slot is padded with spaces rather
+than shortening the buffer, so a reader can never see a short read and
+`JSON.parse` ignores the tail. A reader *can* still catch a write in progress and
+get a torn document; it should catch the parse error and skip that tick.
+
+There is no push in the other direction. The only cohtml hook in the runtime is
+`cohtml::Library::DecodeURLString`, a static with no `View` pointer, so
+`View::TriggerEvent` cannot be called and a page cannot be notified. It has to
+poll. `cohtml.WindowsDesktop.dll` exports 235 symbols and `View` and `System`
+are absent from all of them, and from the RTTI, so reaching a view would mean
+walking vtables from `Library::Initialize` against Cohtml 1.13.1.3 headers.
+
+Things worth knowing before writing the page half, all of which cost a debugging
+round trip:
+
+- `fetch` does not exist in this cohtml. Use `XMLHttpRequest`.
+- `document.documentElement.clientWidth` answers `0`, so nothing can be
+  positioned by measuring the viewport.
+- A view may cache a response per url. Cycle the slots and have the page walk
+  the same ring, so it always asks for one whose contents have changed.
+- A relative url resolves inside the requesting document's own folder. From
+  `exported/Overlay/` the slots are `../HUD/mm_0.json`.
+- `HUD.html` is loaded into five views and `Overlay.html` into one, so anything
+  added at body level in the HUD is drawn once per view, each at that view's
+  scale. New UI belongs in Overlay, which is a single full-screen view authored
+  in 1920x1080 pixels.
+
+[`scripts/minimap.lua`](../scripts/minimap.lua) is a worked example: it publishes
+the hero's position and nearby pickups every frame, and the page that reads it
+draws them on a minimap.
 
 ## Driving it from outside
 
