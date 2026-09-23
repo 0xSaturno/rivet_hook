@@ -4,6 +4,9 @@
 
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+
 namespace rivet_hook {
 	struct AssetLoader {
 		static auto
@@ -25,6 +28,11 @@ namespace rivet_hook {
 		// and should simply be skipped.
 		static auto
 		publish_ui_slot(int slot, const char *text, size_t length) -> bool;
+
+		// the asset id the game derives from an asset path, through its own
+		// function. false when that function was not found.
+		static auto
+		asset_id(const char *path, uint64_t &out) -> bool;
 
 		constexpr static int ui_slot_count = 8;
 		constexpr static size_t ui_slot_size = 1024;

@@ -28,6 +28,7 @@ extern "C" {
 #include "time_scale.hpp"
 #include "camera.hpp"
 #include "hud.hpp"
+#include "vanity.hpp"
 #include "game/scene_manager.hpp"
 #include "game_thread.hpp"
 #include "runtime.hpp"
@@ -1589,6 +1590,68 @@ namespace rivet_hook::scripting {
 		return 0;
 	}
 
+	// ---------------------------------------------------------------- vanity --
+
+	// the bundle argument, a config asset path or a 16 digit hex id
+	static auto
+	check_bundle(lua_State *L, const int arg) -> uint64_t {
+		const auto *text = luaL_checkstring(L, arg);
+		uint64_t bundle = 0;
+		if (!vanity::bundle_id(text, bundle)) {
+			luaL_error(L, "%s is neither a bundle path nor a 16 digit hex id", text);
+		}
+
+		return bundle;
+	}
+
+	// the actor argument, the hero when it is left out
+	static auto
+	check_vanity_actor(lua_State *L, const int arg) -> uint32_t {
+		if (!lua_isnoneornil(L, arg)) {
+			return static_cast<uint32_t>(luaL_checkinteger(L, arg));
+		}
+
+		const auto hero = scene_ready() ? scene_query::hero() : 0;
+		if (hero == 0) {
+			luaL_error(L, "there is no hero right now");
+		}
+
+		return hero;
+	}
+
+	// rivet.vanity_equip(bundle, [actor]) -> whether anything new was put on.
+	// bundle is the bundle config's asset path or its id as 16 hex digits.
+	static auto
+	l_vanity_equip(lua_State *L) -> int {
+		const auto bundle = check_bundle(L, 1);
+		const auto actor = check_vanity_actor(L, 2);
+
+		bool equipped = false;
+		const char *reason = "the bundle was not equipped";
+		if (!vanity::equip_bundle(actor, bundle, equipped, &reason)) {
+			luaL_error(L, "%s", reason);
+		}
+
+		lua_pushboolean(L, equipped ? 1 : 0);
+		return 1;
+	}
+
+	// rivet.vanity_owns(bundle, [actor]) -> whether the bundle is unlocked
+	static auto
+	l_vanity_owns(lua_State *L) -> int {
+		const auto bundle = check_bundle(L, 1);
+		const auto actor = check_vanity_actor(L, 2);
+
+		bool owned = false;
+		const char *reason = "the check failed";
+		if (!vanity::has_bundle(actor, bundle, owned, &reason)) {
+			luaL_error(L, "%s", reason);
+		}
+
+		lua_pushboolean(L, owned ? 1 : 0);
+		return 1;
+	}
+
 	static const luaL_Reg g_api[] = {
 		{ "log", l_log },
 		{ "on_frame", l_on_frame },
@@ -1629,6 +1692,8 @@ namespace rivet_hook::scripting {
 		{ "camera_set", l_camera_set },
 		{ "shake_block", l_shake_block },
 		{ "notify", l_notify },
+		{ "vanity_equip", l_vanity_equip },
+		{ "vanity_owns", l_vanity_owns },
 		{ nullptr, nullptr },
 	};
 

@@ -138,6 +138,16 @@ namespace rivet_hook {
 	constexpr uint32_t HUD_SHOW_MESSAGE_ENABLED_END = 0x22;
 	constexpr uint32_t HUD_MESSAGE_ACTION_GET_HUD = 0x1C;
 
+	// vanity. (VanityInventoryManager, bundle asset id, hero type) -> any item newly equipped
+	MAKE_SIGNATURE(VANITY_EQUIP_BUNDLE, "48 89 54 24 10 48 89 4C 24 08 55 56 57 41 54 48 8D 6C 24 C1 48 81 EC B8 00 00 00 45 8B E0 48 8B FA 41 B8 04 00 00 00 48 8B F1 E8")
+	// (VanityInventoryManager, bundle asset id, hero type) -> whether it is owned
+	MAKE_SIGNATURE(VANITY_HAS_BUNDLE, "40 55 56 41 56 41 57 48 83 EC 28 41 8B F0 4C 8B F1 41 83 F8 04 75 03 8B 71 48")
+
+	// HasBundle looks the bundle up in the config manager first, and dereferences
+	// the result unchecked: lea of the manager, then the call to its lookup
+	constexpr uint32_t VANITY_HAS_BUNDLE_CONFIGS_ADDRESS = 0x22;
+	constexpr uint32_t VANITY_HAS_BUNDLE_LOOKUP_ADDRESS = 0x31;
+
 	constexpr uint32_t HERO_SYSTEM_ADDRESS = 0x3;
 	constexpr uint32_t SCENE_MANAGER_ADDRESS = 0x3;
 	constexpr uint32_t ACTOR_ASSET_MANAGER_ADDRESS = 0x3;

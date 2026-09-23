@@ -18,6 +18,7 @@
 #include "time_scale.hpp"
 #include "camera.hpp"
 #include "hud.hpp"
+#include "vanity.hpp"
 #include "overlay.hpp"
 #include "scripting.hpp"
 #endif
@@ -290,6 +291,7 @@ namespace rivet_hook {
 			time_scale::init();
 			camera::init();
 			hud::init();
+			vanity::init();
 			bridge::init();
 			scripting::init();
 			g_output << "[rivet] starting ddl thread\n";

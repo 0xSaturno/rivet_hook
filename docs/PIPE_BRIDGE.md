@@ -109,6 +109,15 @@ python tools/rivetctl.py hud.message center 4 Slow motion on
 The text is the rest of the line, spaces included. See
 [LUA_SCRIPTING.md](LUA_SCRIPTING.md#hud-messages) for the types.
 
+## Outfits
+
+```bash
+python tools/rivetctl.py vanity.owns configs/hero/vanity/vanitybundles/carbonox_armor/hero_vanity_bundle_torso_carbonox_armor.config
+python tools/rivetctl.py vanity.equip configs/hero/vanity/vanitybundles/carbonox_armor/hero_vanity_bundle_torso_carbonox_armor.config
+```
+
+Both act on the hero. See [LUA_SCRIPTING.md](LUA_SCRIPTING.md#outfits).
+
 ## Wire format
 
 One connection, one client at a time. Each message, request or response, is a

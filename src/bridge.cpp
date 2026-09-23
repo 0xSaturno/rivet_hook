@@ -21,6 +21,7 @@
 #include "time_scale.hpp"
 #include "camera.hpp"
 #include "hud.hpp"
+#include "vanity.hpp"
 #include "game/scene_manager.hpp"
 #include "game_thread.hpp"
 #include "scene_query.hpp"
@@ -1546,6 +1547,50 @@ namespace rivet_hook::bridge {
 		return ok(result);
 	}
 
+	// vanity.equip <bundle> | vanity.owns <bundle>, on the hero. bundle is the
+	// config asset path or its id as 16 hex digits
+	static auto
+	cmd_vanity(const std::vector<std::string> &args) -> std::string {
+		if (args.size() < 2) {
+			return error("usage: " + args[0] + " <bundle path or 16 digit hex id>");
+		}
+
+		uint64_t bundle = 0;
+		if (!vanity::bundle_id(args[1].c_str(), bundle)) {
+			return error(args[1] + " is neither a bundle path nor a 16 digit hex id");
+		}
+
+		const auto hero = scene_query::hero();
+		if (hero == 0) {
+			return error("there is no hero right now");
+		}
+
+		char id[24];
+		_snprintf_s(id, sizeof(id), _TRUNCATE, "%016llx", bundle);
+
+		nlohmann::json result;
+		result["bundle"] = id;
+
+		const char *reason = nullptr;
+		if (args[0] == "vanity.owns") {
+			bool owned = false;
+			if (!vanity::has_bundle(hero, bundle, owned, &reason)) {
+				return error(reason != nullptr ? reason : "refused");
+			}
+
+			result["owned"] = owned;
+			return ok(result);
+		}
+
+		bool equipped = false;
+		if (!vanity::equip_bundle(hero, bundle, equipped, &reason)) {
+			return error(reason != nullptr ? reason : "refused");
+		}
+
+		result["equipped"] = equipped;
+		return ok(result);
+	}
+
 	// runs on the engine thread, inside pump
 	static auto
 	execute(const std::string &line) -> std::string {
@@ -1641,6 +1686,10 @@ namespace rivet_hook::bridge {
 
 		if (command == "camera.get" || command == "camera.detach" || command == "camera.attach" || command == "camera.set" || command == "camera.shake") {
 			return cmd_camera(args);
+		}
+
+		if (command == "vanity.equip" || command == "vanity.owns") {
+			return cmd_vanity(args);
 		}
 
 		if (command == "time.status") {
@@ -1800,7 +1849,7 @@ namespace rivet_hook::bridge {
 		if (args[0] == "help") {
 			nlohmann::json result;
 			result["commands"] = nlohmann::json::array_t {
-				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]", "hud.notify <text>", "hud.message <type> <seconds> <text>"
+				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]", "hud.notify <text>", "hud.message <type> <seconds> <text>", "vanity.equip <bundle>", "vanity.owns <bundle>"
 			};
 			return ok(result);
 		}

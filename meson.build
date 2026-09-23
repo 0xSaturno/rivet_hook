@@ -129,6 +129,7 @@ if not get_option('loader_only')
         'src/hud.cpp',
         'src/scene_query.cpp',
         'src/time_scale.cpp',
+        'src/vanity.cpp',
         'src/watch.cpp',
         'src/overlay.cpp',
         'src/overlay_core.cpp',

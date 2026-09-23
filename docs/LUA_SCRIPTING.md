@@ -326,6 +326,29 @@ the game itself put there. The text goes through the game's icon markup like
 any of its own messages. Nothing shows while HUD messages are turned off in the
 game's options, and `notify` raises saying so instead of failing silently.
 
+### Outfits
+
+| | |
+|---|---|
+| `rivet.vanity_equip(bundle, [actor])` | put on an owned armor piece the way the game does; `true` if anything new went on |
+| `rivet.vanity_owns(bundle, [actor])` | whether that piece is unlocked |
+
+`bundle` is the bundle config's asset path or its asset id as 16 hex digits.
+`actor` defaults to the hero, the only actor that carries a vanity inventory.
+Each armor set has a head, torso and legs bundle:
+
+```lua
+local set = "configs/hero/vanity/vanitybundles/carbonox_armor/"
+for _, part in ipairs({ "head", "torso", "legs" }) do
+  rivet.vanity_equip(set .. "hero_vanity_bundle_" .. part .. "_carbonox_armor.config")
+end
+```
+
+This goes through the game's own vanity inventory, so the parts load, the
+choice is the same one the pause menu makes, and it may be saved like one.
+Pieces the hero has not unlocked are refused: the game looks the bundle's config
+up without checking it exists, so ownership is checked first.
+
 ### The game UI
 
 | | |

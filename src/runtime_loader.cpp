@@ -995,6 +995,18 @@ namespace rivet_hook {
 	}
 
 	auto
+	AssetLoader::asset_id(const char *path, uint64_t &out) -> bool {
+		if (game_create_asset_id == nullptr || path == nullptr || path[0] == '\0') {
+			return false;
+		}
+
+		AssetId id = 0;
+		game_create_asset_id(&id, path);
+		out = id;
+		return true;
+	}
+
+	auto
 	AssetLoader::init() -> void {
 		if (runtime_loader_ready) {
 			return;
