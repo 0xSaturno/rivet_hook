@@ -46,6 +46,23 @@ namespace rivet_hook::hero_look {
 	using remove_all_skin_items_t = void (*)(void *skin_manager);
 	using reinit_from_prius_t = bool (*)(void *component, const void *class_info, void *prius);
 	using post_activate_t = void (*)(void *component, const void *asset);
+	using scratch_t = void (*)(void *scratch);
+	using create_prius_t = bool (*)(void *manager, void **prius, void **type_info, const void *class_info, const void *asset);
+	using anim_set_at_t = const uint64_t *(*)(const void *prius, void *scratch, uint32_t index);
+	using remove_anim_set_t = void (*)(void *controller, uint64_t id, bool flag, uint32_t unique_id);
+	using push_anim_set_t = void (*)(void *controller, void *out, uint64_t id, uint32_t flags, uint32_t unused);
+	using destroy_prius_t = void (*)(void *prius);
+
+	// AnimControllerComponent: its anim controller, and the dirty flags the engine
+	// sets before every change to it
+	constexpr size_t ANIM_COMPONENT_CONTROLLER = 0xF8;
+	constexpr size_t ANIM_COMPONENT_FLAGS = 0x74;
+	constexpr uint32_t ANIM_COMPONENT_DIRTY = 0x4;
+	// AnimControllerComponentPrius: the AnimSets count
+	constexpr size_t ANIM_PRIUS_SET_COUNT = 0x10;
+	// DDLStructTypeInfo: its Destroy
+	constexpr size_t TYPE_INFO_DESTROY = 0xE0;
+	constexpr int32_t MAX_ANIM_SETS = 64;
 
 	static load_actor_asset_t g_load_actor_asset = nullptr;
 	static lookup_actor_asset_t g_lookup_actor_asset = nullptr;
@@ -61,6 +78,15 @@ namespace rivet_hook::hero_look {
 	static const void *g_skin_class = nullptr;
 	static bool g_ready = false;
 
+	static const void *g_anim_class = nullptr;
+	static scratch_t g_scratch_save = nullptr;
+	static scratch_t g_scratch_restore = nullptr;
+	static create_prius_t g_create_prius = nullptr;
+	static anim_set_at_t g_anim_set_at = nullptr;
+	static remove_anim_set_t g_remove_anim_set = nullptr;
+	static push_anim_set_t g_push_anim_set = nullptr;
+	static bool g_anims_ready = false;
+
 	// HeroSkinManagerPrius as OnTransformationPostActivate builds it on its stack
 	struct SkinPrius {
 		const void *vtable;
@@ -75,13 +101,29 @@ namespace rivet_hook::hero_look {
 	static Asset *g_pending_asset = nullptr;
 	static std::string g_last_error;
 
-	// a restore's second half: the skin manager is rebuilt only once the deferred
-	// switch has put the hero's own model back, or its parts bind to the old rig
-	static uint32_t g_restore_actor = 0;
-	static void *g_restore_model = nullptr;
-	static int32_t g_restore_pumps = 0;
-	// pumps to wait for the switch before rebuilding anyway
-	constexpr int32_t RESTORE_MAX_PUMPS = 30;
+	static bool g_pending_anims = false;
+
+	// SwitchModel lands at the end of the frame. whatever binds to the new rig
+	// waits for it: a restore's skin manager rebuild, whose parts would otherwise
+	// bind to the old rig, and the target's anim sets
+	enum class AfterSwitch {
+		None,
+		RebuildSkin,
+		PushAnimSets,
+	};
+
+	static AfterSwitch g_after = AfterSwitch::None;
+	static uint32_t g_after_actor = 0;
+	static void *g_after_model = nullptr;
+	static uint64_t g_after_asset = 0;
+	static int32_t g_after_pumps = 0;
+	// pumps to wait for the switch before going ahead anyway
+	constexpr int32_t AFTER_SWITCH_MAX_PUMPS = 30;
+
+	// the target's anim sets pushed onto the hero, removed again on restore
+	static uint32_t g_pushed_actor = 0;
+	static uint64_t g_pushed_sets[MAX_ANIM_SETS];
+	static int32_t g_pushed_count = 0;
 
 	auto
 	init() -> void {
@@ -112,6 +154,22 @@ namespace rivet_hook::hero_look {
 		g_ready = g_load_actor_asset != nullptr && g_remove_all_skin_items != nullptr && g_actor_assets != nullptr && g_lookup_actor_asset != nullptr
 			&& g_resolve_model_inst != nullptr && g_create_scene_object != nullptr && g_switch_model != nullptr && g_destroy_model_inst != nullptr
 			&& g_post_activate != nullptr && g_skin_prius_vtable != nullptr && g_skin_class != nullptr && g_reinit_from_prius != nullptr;
+		if (const auto finalize = find_address(TRANSFORMATION_FINALIZE_SIGNATURE); finalize != 0) {
+			g_anim_class = load_rel_var(finalize, FINALIZE_ANIM_CLASS_ADDRESS);
+			g_scratch_save = reinterpret_cast<scratch_t>(load_rel_var(finalize, FINALIZE_SCRATCH_SAVE_ADDRESS));
+			g_scratch_restore = reinterpret_cast<scratch_t>(load_rel_var(finalize, FINALIZE_SCRATCH_RESTORE_ADDRESS));
+			g_create_prius = reinterpret_cast<create_prius_t>(load_rel_var(finalize, FINALIZE_CREATE_PRIUS_ADDRESS));
+			g_anim_set_at = reinterpret_cast<anim_set_at_t>(load_rel_var(finalize, FINALIZE_ANIM_SET_AT_ADDRESS));
+			g_remove_anim_set = reinterpret_cast<remove_anim_set_t>(load_rel_var(finalize, FINALIZE_REMOVE_ANIM_SET_ADDRESS));
+			g_push_anim_set = reinterpret_cast<push_anim_set_t>(load_rel_var(finalize, FINALIZE_PUSH_ANIM_SET_ADDRESS));
+			g_anims_ready = g_anim_class != nullptr && g_scratch_save != nullptr && g_scratch_restore != nullptr && g_create_prius != nullptr
+				&& g_anim_set_at != nullptr && g_remove_anim_set != nullptr && g_push_anim_set != nullptr;
+		}
+
+		if (g_ready && !g_anims_ready) {
+			g_output << "[hero_look] the anim set calls were not found, looks are put on without their anim sets\n";
+		}
+
 		if (g_ready) {
 			g_output << "[hero_look] HandleTransformationEvent at " << reinterpret_cast<void *>(handle_event) << ", OnTransformationPostActivate at " << reinterpret_cast<void *>(post_activate) << "\n";
 		} else {
@@ -240,12 +298,92 @@ namespace rivet_hook::hero_look {
 #endif
 	}
 
+	// the AnimSets an actor asset's AnimControllerComponentPrius lists, built in
+	// scratch memory the way FinalizeTransformation builds it. false when the
+	// asset has no such prius or the read faulted.
+	static auto
+	call_read_anim_sets(void *manager, const void *actor_asset, uint64_t *out, const int32_t max, int32_t *count) -> bool {
+		*count = 0;
+		uint8_t scratch[0x10];
+		g_scratch_save(scratch);
+		bool found = false;
+#ifdef _MSC_VER
+		__try {
+#endif
+			void *prius = nullptr;
+			void *type_info = nullptr;
+			if (g_create_prius(manager, &prius, &type_info, g_anim_class, actor_asset) && prius != nullptr) {
+				found = true;
+				const auto sets = *reinterpret_cast<const uint32_t *>(static_cast<uint8_t *>(prius) + ANIM_PRIUS_SET_COUNT);
+				for (uint32_t index = 0; index < sets && *count < max; ++index) {
+					uint8_t id_scratch[0x10];
+					if (const auto *id = g_anim_set_at(prius, id_scratch, index); id != nullptr && *id != 0) {
+						out[(*count)++] = *id;
+					}
+				}
+
+				if (type_info != nullptr) {
+					(*reinterpret_cast<destroy_prius_t *>(static_cast<uint8_t *>(type_info) + TYPE_INFO_DESTROY))(prius);
+				}
+			}
+#ifdef _MSC_VER
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			found = false;
+		}
+#endif
+		g_scratch_restore(scratch);
+		return found;
+	}
+
+	// pushes in reverse, as FinalizeTransformation does, so the first listed set
+	// ends up on top
+	static auto
+	call_push_anim_sets(void *anim, const uint64_t *ids, const int32_t count) -> bool {
+#ifdef _MSC_VER
+		__try {
+#endif
+			auto *bytes = static_cast<uint8_t *>(anim);
+			for (auto index = count - 1; index >= 0; --index) {
+				uint8_t out[0x40] {};
+				*reinterpret_cast<uint32_t *>(bytes + ANIM_COMPONENT_FLAGS) |= ANIM_COMPONENT_DIRTY;
+				g_push_anim_set(bytes + ANIM_COMPONENT_CONTROLLER, out, ids[index], 0, 0);
+			}
+
+			return true;
+#ifdef _MSC_VER
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			return false;
+		}
+#endif
+	}
+
+	static auto
+	call_remove_anim_sets(void *anim, const uint64_t *ids, const int32_t count) -> bool {
+#ifdef _MSC_VER
+		__try {
+#endif
+			auto *bytes = static_cast<uint8_t *>(anim);
+			for (auto index = 0; index < count; ++index) {
+				*reinterpret_cast<uint32_t *>(bytes + ANIM_COMPONENT_FLAGS) |= ANIM_COMPONENT_DIRTY;
+				g_remove_anim_set(bytes + ANIM_COMPONENT_CONTROLLER, ids[index], true, 0);
+			}
+
+			return true;
+#ifdef _MSC_VER
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			return false;
+		}
+#endif
+	}
+
 	// ------------------------------------------------------------------ hero --
 
 	struct Hero {
 		uint32_t handle;
 		const Actor *actor;
 		void *skin_manager;
+		// the AnimControllerComponent, null when the hero has none
+		void *anim;
 		void *model_inst;
 	};
 
@@ -292,23 +430,26 @@ namespace rivet_hook::hero_look {
 		}
 
 		out.skin_manager = nullptr;
+		out.anim = nullptr;
 		if (out.actor->components == nullptr || out.actor->componentCount <= 0 || !ddl::is_readable(out.actor->components, sizeof(ComponentPointer) * out.actor->componentCount)) {
 			return fail(reason, "the hero has no readable component list");
 		}
 
-		for (auto index = 0; index < out.actor->componentCount && out.skin_manager == nullptr; ++index) {
+		for (auto index = 0; index < out.actor->componentCount; ++index) {
 			const auto [type, instance] = out.actor->components[index];
 			if (type == nullptr || instance == nullptr || !ddl::is_readable(type, sizeof(ComponentInfo))) {
 				continue;
 			}
 
 			char name[0x100];
-			if (!ddl::read_string(type->name, name, sizeof(name)) || strcmp(name, "HeroSkinManager") != 0) {
+			if (!ddl::read_string(type->name, name, sizeof(name)) || !ddl::is_readable(instance, sizeof(Component)) || instance->IsDestroyed()) {
 				continue;
 			}
 
-			if (ddl::is_readable(instance, sizeof(Component)) && !instance->IsDestroyed()) {
+			if (strcmp(name, "HeroSkinManager") == 0) {
 				out.skin_manager = instance;
+			} else if (strcmp(name, "AnimControllerComponent") == 0) {
+				out.anim = instance;
 			}
 		}
 
@@ -330,9 +471,81 @@ namespace rivet_hook::hero_look {
 		return asset;
 	}
 
+	// what to do once the switch to model has landed on the hero
+	static auto
+	after_switch(const AfterSwitch action, const uint32_t actor, void *model, const uint64_t asset) -> void {
+		g_after = action;
+		g_after_actor = actor;
+		g_after_model = model;
+		g_after_asset = asset;
+		g_after_pumps = 0;
+	}
+
+	// takes the anim sets a look pushed back off, while the hero is the same actor
+	static auto
+	drop_pushed_anim_sets(const Hero &hero) -> void {
+		if (g_pushed_count > 0 && g_pushed_actor == hero.handle && hero.anim != nullptr) {
+			if (!call_remove_anim_sets(hero.anim, g_pushed_sets, g_pushed_count)) {
+				g_output << "[hero_look] removing the pushed anim sets faulted\n";
+				g_output.flush();
+			}
+		}
+
+		g_pushed_count = 0;
+		g_pushed_actor = 0;
+	}
+
+	// the target's anim sets on top of the hero's, leaving out the ones the hero's
+	// own asset lists, so taking them off again never strips the hero's own
+	static auto
+	push_anim_sets(const Hero &hero, const uint64_t asset_id) -> void {
+		const char *reason = nullptr;
+		const auto *target = loaded_actor_asset(asset_id, &reason);
+		if (target == nullptr || hero.anim == nullptr) {
+			g_last_error = target == nullptr ? reason : "the hero has no AnimControllerComponent";
+			return;
+		}
+
+		uint64_t sets[MAX_ANIM_SETS];
+		int32_t count = 0;
+		if (!call_read_anim_sets(hero.skin_manager, target, sets, MAX_ANIM_SETS, &count) || count == 0) {
+			g_last_error = "the actor asset has no anim sets";
+			return;
+		}
+
+		uint64_t own[MAX_ANIM_SETS];
+		int32_t own_count = 0;
+		if (const auto *own_asset = loaded_actor_asset(hero.actor->actorAsset->assetId, &reason); own_asset != nullptr) {
+			call_read_anim_sets(hero.skin_manager, own_asset, own, MAX_ANIM_SETS, &own_count);
+		}
+
+		int32_t kept = 0;
+		for (auto index = 0; index < count; ++index) {
+			auto shared = false;
+			for (auto other = 0; other < own_count && !shared; ++other) {
+				shared = sets[index] == own[other];
+			}
+
+			if (!shared) {
+				sets[kept++] = sets[index];
+			}
+		}
+
+		if (!call_push_anim_sets(hero.anim, sets, kept)) {
+			g_last_error = "pushing the anim sets faulted";
+			return;
+		}
+
+		memcpy(g_pushed_sets, sets, sizeof(uint64_t) * kept);
+		g_pushed_count = kept;
+		g_pushed_actor = hero.handle;
+		g_output << "[hero_look] pushed " << kept << " of " << count << " anim sets\n";
+		g_output.flush();
+	}
+
 	// the engine's order: parts off, model switched, skin manager rebuilt
 	static auto
-	apply(const uint64_t id, const char **reason) -> bool {
+	apply(const uint64_t id, const bool anims, const char **reason) -> bool {
 		Hero hero {};
 		if (!find_hero(hero, reason)) {
 			return false;
@@ -343,6 +556,12 @@ namespace rivet_hook::hero_look {
 			return false;
 		}
 
+		if (anims && (!g_anims_ready || hero.anim == nullptr)) {
+			return fail(reason, g_anims_ready ? "the hero has no AnimControllerComponent" : "the anim set calls were not found");
+		}
+
+		// a previous look's sets come off before another goes on
+		drop_pushed_anim_sets(hero);
 		if (!call_remove_parts(hero.skin_manager)) {
 			return fail(reason, "RemoveAllSkinItemsByPart faulted");
 		}
@@ -362,12 +581,13 @@ namespace rivet_hook::hero_look {
 			return fail(reason, "rebuilding the skin manager faulted");
 		}
 
+		after_switch(anims ? AfterSwitch::PushAnimSets : AfterSwitch::None, hero.handle, switched, id);
 		g_worn_actor = hero.handle;
 		return true;
 	}
 
 	auto
-	request(const char *path, const char **reason) -> Result {
+	request(const char *path, const bool anims, const char **reason) -> Result {
 		if (!g_ready) {
 			fail(reason, "the transformation calls were not found");
 			return Result::Failed;
@@ -392,12 +612,13 @@ namespace rivet_hook::hero_look {
 		if (asset->status != AssetStatus::Loaded) {
 			g_pending_path = path;
 			g_pending_asset = asset;
+			g_pending_anims = anims;
 			return Result::Loading;
 		}
 
 		g_pending_path.clear();
 		g_pending_asset = nullptr;
-		if (!apply(asset->assetId, reason)) {
+		if (!apply(asset->assetId, anims, reason)) {
 			return Result::Failed;
 		}
 
@@ -424,6 +645,8 @@ namespace rivet_hook::hero_look {
 			return false;
 		}
 
+		drop_pushed_anim_sets(hero);
+
 		void *switched = nullptr;
 		if (!call_remove_parts(hero.skin_manager) || !call_switch(hero.model_inst, own, &switched)) {
 			return fail(reason, "the model switch faulted");
@@ -434,45 +657,49 @@ namespace rivet_hook::hero_look {
 		}
 
 		// the switch lands at the end of the frame, the rebuild waits for it
-		g_restore_actor = hero.handle;
-		g_restore_model = switched;
-		g_restore_pumps = 0;
+		after_switch(AfterSwitch::RebuildSkin, hero.handle, switched, hero.actor->actorAsset->assetId);
 		g_worn_path.clear();
 		g_worn_actor = 0;
 		return true;
 	}
 
-	// the skin manager for the type the hero really is, vanity parts and all,
-	// once the hero's ModelInst holds its own model again
+	// runs the pending step once the hero's ModelInst holds the model it was
+	// switched to: the skin manager for the type the hero really is, vanity parts
+	// and all, or the target's anim sets
 	static auto
-	finish_restore() -> void {
-		if (g_restore_model == nullptr || !game_thread::on_game_thread()) {
+	run_after_switch() -> void {
+		if (g_after == AfterSwitch::None || !game_thread::on_game_thread()) {
 			return;
 		}
 
 		Hero hero {};
 		const char *reason = nullptr;
-		if (!find_hero(hero, &reason) || hero.handle != g_restore_actor) {
+		if (!find_hero(hero, &reason) || hero.handle != g_after_actor) {
 			// respawned or gone: a new hero is built with its own look
-			g_restore_model = nullptr;
+			g_after = AfterSwitch::None;
 			return;
 		}
 
 		const auto *current = static_cast<uint8_t *>(hero.model_inst) + MODEL_INST_MODEL;
-		const auto switched = ddl::is_readable(current, sizeof(void *)) && *reinterpret_cast<void *const *>(current) == g_restore_model;
-		if (!switched && ++g_restore_pumps < RESTORE_MAX_PUMPS) {
+		const auto switched = ddl::is_readable(current, sizeof(void *)) && *reinterpret_cast<void *const *>(current) == g_after_model;
+		if (!switched && ++g_after_pumps < AFTER_SWITCH_MAX_PUMPS) {
 			return;
 		}
 
-		g_restore_model = nullptr;
+		const auto action = g_after;
+		g_after = AfterSwitch::None;
 		if (!switched) {
-			g_output << "[hero_look] the hero's own model did not come back in time, rebuilding the skin manager anyway\n";
+			g_output << "[hero_look] the switched model did not land in time, going ahead anyway\n";
 		}
 
-		const auto *own = loaded_actor_asset(hero.actor->actorAsset->assetId, &reason);
-		if (own == nullptr || !call_post_activate(hero.skin_manager, own)) {
-			g_last_error = own == nullptr ? reason : "OnTransformationPostActivate faulted";
-			g_output << "[hero_look] restore: " << g_last_error << "\n";
+		if (action == AfterSwitch::PushAnimSets) {
+			push_anim_sets(hero, g_after_asset);
+		} else {
+			const auto *own = loaded_actor_asset(g_after_asset, &reason);
+			if (own == nullptr || !call_post_activate(hero.skin_manager, own)) {
+				g_last_error = own == nullptr ? reason : "OnTransformationPostActivate faulted";
+				g_output << "[hero_look] restore: " << g_last_error << "\n";
+			}
 		}
 
 		g_output.flush();
@@ -480,7 +707,7 @@ namespace rivet_hook::hero_look {
 
 	auto
 	pump() -> void {
-		finish_restore();
+		run_after_switch();
 
 		if (g_pending_asset == nullptr || !game_thread::on_game_thread()) {
 			return;
@@ -500,6 +727,7 @@ namespace rivet_hook::hero_look {
 
 		const auto path = g_pending_path;
 		const auto id = g_pending_asset->assetId;
+		const auto anims = g_pending_anims;
 		g_pending_path.clear();
 		g_pending_asset = nullptr;
 		if (status != AssetStatus::Loaded) {
@@ -508,7 +736,7 @@ namespace rivet_hook::hero_look {
 		}
 
 		const char *reason = nullptr;
-		if (!apply(id, &reason)) {
+		if (!apply(id, anims, &reason)) {
 			g_last_error = reason != nullptr ? reason : "refused";
 			g_output << "[hero_look] " << path << ": " << g_last_error << "\n";
 			g_output.flush();
@@ -526,7 +754,8 @@ namespace rivet_hook::hero_look {
 		result["worn"] = g_worn_path.empty() ? nlohmann::json() : nlohmann::json(g_worn_path);
 		result["worn_on"] = g_worn_actor;
 		result["pending"] = g_pending_path.empty() ? nlohmann::json() : nlohmann::json(g_pending_path);
-		result["restoring"] = g_restore_model != nullptr;
+		result["restoring"] = g_after == AfterSwitch::RebuildSkin;
+		result["anim_sets_pushed"] = g_pushed_count;
 		result["last_error"] = g_last_error.empty() ? nlohmann::json() : nlohmann::json(g_last_error);
 		return result;
 	}

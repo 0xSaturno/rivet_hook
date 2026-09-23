@@ -151,6 +151,9 @@ namespace rivet_hook {
 	// rebuilds the actor's HeroSkinManager for the hero type its HeroConfigManager
 	// holds, from a stack prius, through ReinitializeComponentFromPrius
 	MAKE_SIGNATURE(HERO_TRANSFORMATION_POST_ACTIVATE, "48 89 5C 24 08 57 48 83 EC 30 48 8B D9 48 8D 3D ?? ?? ?? ?? 48 89 7C 24 20 48 8D 4C 24 20 E8 ?? ?? ?? ?? 90 48 8B 4B 10 48 8D 15")
+	// TransformationManager::FinalizeTransformation. its anim block swaps the anim
+	// sets for the new asset's AnimControllerComponentPrius
+	MAKE_SIGNATURE(TRANSFORMATION_FINALIZE, "48 89 4C 24 08 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 F8 FE FF FF 48 81 EC 08 02 00 00 48 8B F1 80 B9 98 01 00 00 00")
 	// SkinManagerBase::RemoveAllSkinItemsByPart (skin manager)
 	MAKE_SIGNATURE(SKIN_REMOVE_ALL_ITEMS, "40 56 57 41 54 48 83 EC 30 44 8B 61 4C 33 F6 48 8B F9 45 85 E4 0F 84")
 
@@ -170,6 +173,19 @@ namespace rivet_hook {
 	constexpr uint32_t HERO_POST_ACTIVATE_PRIUS_VTABLE_ADDRESS = 0x10;
 	constexpr uint32_t HERO_POST_ACTIVATE_SKIN_CLASS_ADDRESS = 0x61;
 	constexpr uint32_t HERO_POST_ACTIVATE_REINIT_ADDRESS = 0x69;
+	// inside FinalizeTransformation: the AnimControllerComponent class info,
+	// Alloc::ScratchRestore's constructor and destructor, CreateComponentPrius
+	// (manager, out prius, out type info, class info, actor asset), the prius's
+	// anim set id accessor (prius, scratch, index) -> id *, and the anim
+	// controller's RemoveAnimSet (controller, id, flag, unique id) and
+	// PushAnimSet (controller, out, id, flags, 0)
+	constexpr uint32_t FINALIZE_ANIM_CLASS_ADDRESS = 0x1BB;
+	constexpr uint32_t FINALIZE_SCRATCH_SAVE_ADDRESS = 0x1F4;
+	constexpr uint32_t FINALIZE_CREATE_PRIUS_ADDRESS = 0x233;
+	constexpr uint32_t FINALIZE_ANIM_SET_AT_ADDRESS = 0x25E;
+	constexpr uint32_t FINALIZE_REMOVE_ANIM_SET_ADDRESS = 0x278;
+	constexpr uint32_t FINALIZE_PUSH_ANIM_SET_ADDRESS = 0x609;
+	constexpr uint32_t FINALIZE_SCRATCH_RESTORE_ADDRESS = 0x707;
 
 	// script signals. the plug send loads the global signal queue and calls its
 	// AddEntry(queue, component handle *, input plug hash, output plug hash, source)

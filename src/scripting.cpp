@@ -1657,9 +1657,10 @@ namespace rivet_hook::scripting {
 
 	// ------------------------------------------------------------- hero look --
 
-	// rivet.hero_look(actor_asset_path) -> "applied" | "loading": the hero wears
-	// that actor asset's model, its gameplay unchanged. a loading asset is applied
-	// by the pump once it is in. rivet.hero_look() puts the hero's own look back.
+	// rivet.hero_look(actor_asset_path, [anims]) -> "applied" | "loading": the hero
+	// wears that actor asset's model, its gameplay unchanged, and with anims the
+	// asset's anim sets too. a loading asset is applied by the pump once it is in.
+	// rivet.hero_look() puts the hero's own look back.
 	static auto
 	l_hero_look(lua_State *L) -> int {
 		const char *reason = "refused";
@@ -1672,7 +1673,7 @@ namespace rivet_hook::scripting {
 			return 1;
 		}
 
-		const auto result = hero_look::request(luaL_checkstring(L, 1), &reason);
+		const auto result = hero_look::request(luaL_checkstring(L, 1), lua_toboolean(L, 2) != 0, &reason);
 		if (result == hero_look::Result::Failed) {
 			luaL_error(L, "%s", reason);
 		}

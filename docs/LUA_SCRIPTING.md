@@ -353,7 +353,7 @@ up without checking it exists, so ownership is checked first.
 
 | | |
 |---|---|
-| `rivet.hero_look(actor_asset)` | the hero wears that actor asset's model; `"applied"`, or `"loading"` while the asset loads |
+| `rivet.hero_look(actor_asset, [anims])` | the hero wears that actor asset's model; `"applied"`, or `"loading"` while the asset loads. `anims` also puts on the asset's anim sets |
 | `rivet.hero_look()` | the hero's own model and outfit back; `"restored"` |
 
 ```lua
@@ -366,8 +366,11 @@ skips the rest of it. Her outfit comes off while the other model is worn, and
 comes back on restore.
 
 An asset that is not loaded yet is loaded first and put on by the first pump
-after it finishes. The model only animates properly when it shares Rivet's
-skeleton; anything else moves with her but mostly holds its bind pose. The look
+after it finishes. Without `anims` the model only animates properly when it
+shares Rivet's skeleton. With it, the asset's own anim sets go on top of
+Rivet's once the model has switched, so anything they cover plays the
+character's own animation; moves only Rivet has still hold a bind pose. The
+sets come off again on restore. The look
 is lost when the hero respawns, and a cutscene that rebuilds the outfit can
 undo it; call `hero_look` again.
 

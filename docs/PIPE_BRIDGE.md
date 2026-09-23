@@ -122,11 +122,12 @@ Both act on the hero. See [LUA_SCRIPTING.md](LUA_SCRIPTING.md#outfits).
 
 ```bash
 python tools/rivetctl.py hero.look characters/hero/hero_Kit/hero_kit.actor
+python tools/rivetctl.py hero.look characters/hero/hero_Kit/hero_kit.actor anims
 python tools/rivetctl.py hero.look
 python tools/rivetctl.py hero.restore
 ```
 
-`hero.look <actor asset>` is `rivet.hero_look`; with no path it reports what is
+`hero.look <actor asset> [anims]` is `rivet.hero_look`, `anims` putting on the asset's anim sets too; with no path it reports what is
 worn and what is still loading. `hero.restore` puts the hero's own look back.
 See [LUA_SCRIPTING.md](LUA_SCRIPTING.md#hero-model).
 
