@@ -22,6 +22,8 @@
 #include "camera.hpp"
 #include "hud.hpp"
 #include "vanity.hpp"
+#include "configs.hpp"
+#include "script_signal.hpp"
 #include "game/scene_manager.hpp"
 #include "game_thread.hpp"
 #include "scene_query.hpp"
@@ -1591,6 +1593,135 @@ namespace rivet_hook::bridge {
 		return ok(result);
 	}
 
+	// config.list [type] [limit] | config.get <id|path> | config.set <id|path> <field> <value>
+	static auto
+	cmd_config(const std::vector<std::string> &args) -> std::string {
+		if (const auto *why = configs::unavailable_reason(); why[0] != '\0') {
+			return error(why);
+		}
+
+		if (args[0] == "config.list") {
+			// a lone number is the limit, not a type
+			if (args.size() == 2 && !args[1].empty() && std::isdigit(static_cast<unsigned char>(args[1][0]))) {
+				return ok(configs::list("", parse_limit(args, 1, 200)));
+			}
+
+			return ok(configs::list(args.size() > 1 ? args[1].c_str() : "", parse_limit(args, 2, 200)));
+		}
+
+		if (args.size() < 2) {
+			return error("usage: " + args[0] + " <config path or 16 digit hex id> ...");
+		}
+
+		uint64_t id = 0;
+		if (!configs::parse_id(args[1].c_str(), id)) {
+			return error(args[1] + " is neither a config path nor a 16 digit hex id");
+		}
+
+		configs::Config config;
+		if (!configs::find(id, config)) {
+			return error("no config " + args[1] + " is loaded");
+		}
+
+		char name[0x100];
+		if (!ddl::read_string(config.type->name, name, sizeof(name))) {
+			name[0] = '\0';
+		}
+
+		nlohmann::json result;
+		result["type"] = name;
+
+		if (args[0] == "config.get") {
+			result["fields"] = configs::values(config);
+			return ok(result);
+		}
+
+		if (args.size() < 4) {
+			return error("usage: config.set <config> <field.path> <value>");
+		}
+
+		ddl::Value value {};
+		if (args[3] == "true" || args[3] == "false") {
+			value.kind = ddl::ValueKind::Bool;
+			value.as_bool = args[3] == "true";
+		} else {
+			try {
+				value.kind = ddl::ValueKind::Real;
+				value.as_real = std::stod(args[3]);
+			} catch (const std::exception &) {
+				return error("the value has to be a number, true or false");
+			}
+		}
+
+		ddl::Value previous {};
+		const char *reason = nullptr;
+		if (!configs::set(config, args[2].c_str(), value, previous, &reason)) {
+			return error(reason != nullptr ? reason : "refused");
+		}
+
+		result["field"] = args[2];
+		result["was"] = ddl::to_json(previous);
+		return ok(result);
+	}
+
+	// script.nodes [filter] [limit]
+	static auto
+	cmd_script_nodes(const std::vector<std::string> &args) -> std::string {
+		if (g_SceneManager == nullptr) {
+			return error("scene manager is not available");
+		}
+
+		g_scan_deadline = GetTickCount64() + 250;
+
+		// a lone number is the limit, not a filter
+		if (args.size() == 2 && !args[1].empty() && std::isdigit(static_cast<unsigned char>(args[1][0]))) {
+			return ok(script_signal::nodes("", parse_limit(args, 1, 200), scan_expired));
+		}
+
+		return ok(script_signal::nodes(args.size() > 1 ? args[1].c_str() : "", parse_limit(args, 2, 200), scan_expired));
+	}
+
+	// script.signal <actor> <component class> <plug> [nth], nth 1 based
+	static auto
+	cmd_script_signal(const std::vector<std::string> &args) -> std::string {
+		if (args.size() < 4) {
+			return error("usage: script.signal <actor> <component class> <plug> [nth]");
+		}
+
+		EngineHandle actor {};
+		if (!parse_handle(args[1], actor)) {
+			return error("could not parse the actor handle");
+		}
+
+		auto nth = 0;
+		if (args.size() > 4) {
+			try {
+				nth = std::stoi(args[4]) - 1;
+			} catch (const std::exception &) {
+				return error("could not parse nth");
+			}
+		}
+
+		const char *reason = nullptr;
+		const auto node = script_signal::find_node(actor.value, args[2].c_str(), nth, &reason);
+		if (node == 0) {
+			return error(reason != nullptr ? reason : "no such node");
+		}
+
+		const auto plug = script_signal::plug_hash(args[3].c_str());
+		if (!script_signal::send(node, plug, &reason)) {
+			return error(reason != nullptr ? reason : "refused");
+		}
+
+		char plug_text[16];
+		_snprintf_s(plug_text, sizeof(plug_text), _TRUNCATE, "0x%08x", plug);
+
+		nlohmann::json result;
+		result["component"] = node;
+		result["plug"] = plug_text;
+		return ok(result);
+	}
+
 	// runs on the engine thread, inside pump
 	static auto
 	execute(const std::string &line) -> std::string {
@@ -1686,6 +1817,18 @@ namespace rivet_hook::bridge {
 
 		if (command == "camera.get" || command == "camera.detach" || command == "camera.attach" || command == "camera.set" || command == "camera.shake") {
 			return cmd_camera(args);
+		}
+
+		if (command == "script.signal") {
+			return cmd_script_signal(args);
+		}
+
+		if (command == "script.nodes") {
+			return cmd_script_nodes(args);
+		}
+
+		if (command == "config.list" || command == "config.get" || command == "config.set") {
+			return cmd_config(args);
 		}
 
 		if (command == "vanity.equip" || command == "vanity.owns") {
@@ -1849,7 +1992,7 @@ namespace rivet_hook::bridge {
 		if (args[0] == "help") {
 			nlohmann::json result;
 			result["commands"] = nlohmann::json::array_t {
-				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]", "hud.notify <text>", "hud.message <type> <seconds> <text>", "vanity.equip <bundle>", "vanity.owns <bundle>"
+				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]", "hud.notify <text>", "hud.message <type> <seconds> <text>", "vanity.equip <bundle>", "vanity.owns <bundle>", "config.list [type] [limit]", "config.get <config>", "config.set <config> <field.path> <value>", "script.nodes [filter] [limit]", "script.signal <actor> <component class> <plug> [nth]"
 			};
 			return ok(result);
 		}

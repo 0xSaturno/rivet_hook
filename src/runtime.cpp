@@ -19,6 +19,8 @@
 #include "camera.hpp"
 #include "hud.hpp"
 #include "vanity.hpp"
+#include "configs.hpp"
+#include "script_signal.hpp"
 #include "overlay.hpp"
 #include "scripting.hpp"
 #endif
@@ -292,6 +294,8 @@ namespace rivet_hook {
 			camera::init();
 			hud::init();
 			vanity::init();
+			configs::init();
+			script_signal::init();
 			bridge::init();
 			scripting::init();
 			g_output << "[rivet] starting ddl thread\n";

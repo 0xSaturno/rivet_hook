@@ -143,6 +143,13 @@ namespace rivet_hook {
 	// (VanityInventoryManager, bundle asset id, hero type) -> whether it is owned
 	MAKE_SIGNATURE(VANITY_HAS_BUNDLE, "40 55 56 41 56 41 57 48 83 EC 28 41 8B F0 4C 8B F1 41 83 F8 04 75 03 8B 71 48")
 
+	// script signals. the plug send loads the global signal queue and calls its
+	// AddEntry(queue, component handle *, input plug hash, output plug hash, source)
+	MAKE_SIGNATURE(SCRIPT_SIGNAL_SEND, "48 8D 0D ?? ?? ?? ?? 44 8B CD 89 44 24 20 E8")
+
+	constexpr uint32_t SCRIPT_SIGNAL_QUEUE_ADDRESS = 0x3;
+	constexpr uint32_t SCRIPT_SIGNAL_ADD_ENTRY_ADDRESS = 0xF;
+
 	// HasBundle looks the bundle up in the config manager first, and dereferences
 	// the result unchecked: lea of the manager, then the call to its lookup
 	constexpr uint32_t VANITY_HAS_BUNDLE_CONFIGS_ADDRESS = 0x22;

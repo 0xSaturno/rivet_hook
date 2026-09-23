@@ -121,6 +121,7 @@ if not get_option('loader_only')
     sources += [
         'src/bridge.cpp',
         'src/camera.cpp',
+        'src/configs.cpp',
         'src/ddl.cpp',
         'src/ddl_visit.cpp',
         'src/ddl_inspector.cpp',
@@ -134,6 +135,7 @@ if not get_option('loader_only')
         'src/overlay.cpp',
         'src/overlay_core.cpp',
         'src/scripting.cpp',
+        'src/script_signal.cpp',
     ]
     deps += [
         imgui_dep,

@@ -349,6 +349,63 @@ choice is the same one the pause menu makes, and it may be saved like one.
 Pieces the hero has not unlocked are refused: the game looks the bundle's config
 up without checking it exists, so ownership is checked first.
 
+### Configs
+
+| | |
+|---|---|
+| `rivet.configs([type], [limit])` | loaded configs as `{ id, type }`, `limit` defaults to 200 |
+| `rivet.config(config)` | every field of one config as a table, plus `_type` |
+| `rivet.config_set(config, field_path, value)` | write one numeric or boolean field; returns the previous value |
+
+Configs are the game's authored tuning data, and about a thousand are loaded at
+a time across some 180 classes: `HeroTraversalConfig`, `HeroMoverConfig`,
+`HeroHoverbootConfig`, `WeaponConfig`, the `BotConfig*` family,
+`CameraShakingConfig` and so on. `type` matches a class exactly, including every
+class derived from it, or any class whose name contains it. `config` is the
+config's asset path or its asset id as 16 hex digits, the `id` a listing
+returns. `field_path` steps into nested structs with dots.
+
+```lua
+for _, c in ipairs(rivet.configs("HeroHoverbootConfig")) do
+  rivet.log(c.id, c.type)
+end
+```
+
+Edits are in place and live: anything that reads the config from then on sees
+the new value. A component that copied a value when it started keeps its copy
+until it is created again, so some edits need a respawn or a level reload to
+show. Nothing is saved; the next time the config loads it is the authored one.
+
+### Level scripts
+
+| | |
+|---|---|
+| `rivet.script_nodes([filter], [limit])` | loaded script nodes as `{ actor, uid, class }`, classes containing `filter` |
+| `rivet.signal(actor, class, plug, [nth])` | fire an input plug on a script node |
+| `rivet.hash(text)` | the engine's 32 bit string hash |
+
+A zone's level scripts are graphs of script nodes wired together by plugs:
+spawner waves, doors, cinematics, objectives. Every node is a component on an
+actor of its own, and those actors have no scene object, so `rivet.actors` and
+`rivet.find_component` never list them; `script_nodes` does. A node's `uid` is
+its authored id and is the same every launch, so `rivet.find_uid(uid)` finds it
+again after a reload.
+
+`signal` queues the plug like the zone's own wiring would, and the node runs it
+later in the same frame. `plug` is the plug's name (`"Start"`, `"In"`,
+`"Activate"`…) or its hash as `0x` text. `nth` picks among several nodes of the
+same class on one actor, which is rare.
+
+```lua
+for _, node in ipairs(rivet.script_nodes("Spawner")) do
+  rivet.log(node.class, node.actor, node.uid)
+end
+```
+
+`rivet.hash` is the hash plug, event and class names all go through: a
+reflected CRC32 seeded with `0xEDB88320` and no final xor.
+`rivet.hash("PerformWarpEvent")` is the event's hash, `0x38008FE3`.
+
 ### The game UI
 
 | | |

@@ -118,6 +118,27 @@ python tools/rivetctl.py vanity.equip configs/hero/vanity/vanitybundles/carbonox
 
 Both act on the hero. See [LUA_SCRIPTING.md](LUA_SCRIPTING.md#outfits).
 
+## Configs
+
+```bash
+python tools/rivetctl.py config.list Hero
+python tools/rivetctl.py config.get 85ead7ccfb74ae51
+python tools/rivetctl.py config.set 85ead7ccfb74ae51 SomeField 1.5
+```
+
+`config.list [type] [limit]`, `config.get <config>` and
+`config.set <config> <field.path> <value>` are `rivet.configs`, `rivet.config`
+and `rivet.config_set`. See [LUA_SCRIPTING.md](LUA_SCRIPTING.md#configs).
+
+## Level scripts
+
+```bash
+python tools/rivetctl.py script.nodes Spawner
+python tools/rivetctl.py script.signal 2113000 SpawnerAction Start
+```
+
+See [LUA_SCRIPTING.md](LUA_SCRIPTING.md#level-scripts).
+
 ## Wire format
 
 One connection, one client at a time. Each message, request or response, is a

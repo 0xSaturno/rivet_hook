@@ -29,6 +29,8 @@ extern "C" {
 #include "camera.hpp"
 #include "hud.hpp"
 #include "vanity.hpp"
+#include "configs.hpp"
+#include "script_signal.hpp"
 #include "game/scene_manager.hpp"
 #include "game_thread.hpp"
 #include "runtime.hpp"
@@ -1652,6 +1654,173 @@ namespace rivet_hook::scripting {
 		return 1;
 	}
 
+	// --------------------------------------------------------------- configs --
+
+	// the config named by arg: an asset path or 16 hex digits, loaded right now
+	static auto
+	check_config(lua_State *L, const int arg) -> configs::Config {
+		const auto *text = luaL_checkstring(L, arg);
+		if (const auto *why = configs::unavailable_reason(); why[0] != '\0') {
+			luaL_error(L, "configs are unavailable: %s", why);
+		}
+
+		uint64_t id = 0;
+		if (!configs::parse_id(text, id)) {
+			luaL_error(L, "%s is neither a config path nor a 16 digit hex id", text);
+		}
+
+		configs::Config config;
+		if (!configs::find(id, config)) {
+			luaL_error(L, "no config %s is loaded", text);
+		}
+
+		return config;
+	}
+
+	// rivet.configs([type], [limit]) -> { { id = hex, type = name }, ... } of the
+	// loaded configs of that class or one derived from it, or whose class name
+	// contains type. limit defaults to 200.
+	static auto
+	l_configs(lua_State *L) -> int {
+		const auto *type = luaL_optstring(L, 1, "");
+		const auto limit = static_cast<size_t>(luaL_optinteger(L, 2, 200));
+		if (const auto *why = configs::unavailable_reason(); why[0] != '\0') {
+			luaL_error(L, "configs are unavailable: %s", why);
+		}
+
+		// the listing is built and copied out before anything below can raise
+		char ids[512][17];
+		char types[512][64];
+		int32_t found = 0;
+		{
+			const auto listing = configs::list(type, limit < 512 ? limit : 512);
+			for (const auto &entry : listing) {
+				_snprintf_s(ids[found], sizeof(ids[found]), _TRUNCATE, "%s", entry["id"].get<std::string>().c_str());
+				_snprintf_s(types[found], sizeof(types[found]), _TRUNCATE, "%s", entry["type"].get<std::string>().c_str());
+				++found;
+			}
+		}
+
+		lua_createtable(L, found, 0);
+		for (int32_t i = 0; i < found; ++i) {
+			lua_createtable(L, 0, 2);
+			lua_pushstring(L, ids[i]);
+			lua_setfield(L, -2, "id");
+			lua_pushstring(L, types[i]);
+			lua_setfield(L, -2, "type");
+			lua_rawseti(L, -2, i + 1);
+		}
+
+		return 1;
+	}
+
+	// rivet.config(id_or_path) -> the config's fields as a table, nested structs
+	// as tables, plus _type with its class name
+	static auto
+	l_config(lua_State *L) -> int {
+		const auto config = check_config(L, 1);
+		push_object(L, config.type, config.object, 0);
+
+		char name[0x100];
+		if (ddl::read_string(config.type->name, name, sizeof(name))) {
+			lua_pushstring(L, name);
+			lua_setfield(L, -2, "_type");
+		}
+
+		return 1;
+	}
+
+	// rivet.config_set(id_or_path, field_path, value) -> the previous value
+	static auto
+	l_config_set(lua_State *L) -> int {
+		const auto config = check_config(L, 1);
+		const auto *path = luaL_checkstring(L, 2);
+		const auto value = check_value(L, 3);
+
+		ddl::Value previous {};
+		const char *reason = "the write was refused";
+		if (!configs::set(config, path, value, previous, &reason)) {
+			luaL_error(L, "%s", reason);
+		}
+
+		return push_value(L, previous);
+	}
+
+	// ---------------------------------------------------------- level scripts --
+
+	// rivet.hash(text) -> the engine's 32 bit string hash, the one plug, event
+	// and class names are hashed with
+	static auto
+	l_hash(lua_State *L) -> int {
+		lua_pushinteger(L, script_signal::hash(luaL_checkstring(L, 1)));
+		return 1;
+	}
+
+	// rivet.script_nodes([filter], [limit]) -> { { actor, uid, class }, ... } of
+	// the level script nodes loaded now whose class contains filter
+	static auto
+	l_script_nodes(lua_State *L) -> int {
+		constexpr int32_t MAX_NODES = 512;
+		const auto *filter = luaL_optstring(L, 1, "");
+		const auto limit = static_cast<size_t>(luaL_optinteger(L, 2, 200));
+
+		// copied out of the json before anything below can raise
+		struct Node {
+			uint32_t actor;
+			char uid[17];
+			char name[64];
+		};
+
+		static Node found[MAX_NODES];
+		int32_t count = 0;
+		{
+			const auto listing = script_signal::nodes(filter, limit < MAX_NODES ? limit : MAX_NODES, budget_expired);
+			for (const auto &node : listing["nodes"]) {
+				found[count].actor = node["actor"].get<uint32_t>();
+				_snprintf_s(found[count].uid, sizeof(found[count].uid), _TRUNCATE, "%s", node["uid"].get<std::string>().c_str());
+				_snprintf_s(found[count].name, sizeof(found[count].name), _TRUNCATE, "%s", node["class"].get<std::string>().c_str());
+				++count;
+			}
+		}
+
+		lua_createtable(L, count, 0);
+		for (int32_t i = 0; i < count; ++i) {
+			lua_createtable(L, 0, 3);
+			lua_pushinteger(L, found[i].actor);
+			lua_setfield(L, -2, "actor");
+			lua_pushstring(L, found[i].uid);
+			lua_setfield(L, -2, "uid");
+			lua_pushstring(L, found[i].name);
+			lua_setfield(L, -2, "class");
+			lua_rawseti(L, -2, i + 1);
+		}
+
+		return 1;
+	}
+
+	// rivet.signal(actor, component_class, plug, [nth]): fires an input plug on a
+	// level script node, the nth (1 based) component of that class on the actor.
+	// plug is the plug's name ("Start", "In", ...) or its hash as 0x hex text.
+	static auto
+	l_signal(lua_State *L) -> int {
+		const auto actor = static_cast<uint32_t>(luaL_checkinteger(L, 1));
+		const auto *component_class = luaL_checkstring(L, 2);
+		const auto plug = script_signal::plug_hash(luaL_checkstring(L, 3));
+		const auto nth = static_cast<int32_t>(luaL_optinteger(L, 4, 1)) - 1;
+
+		const char *reason = "the signal was refused";
+		const auto node = script_signal::find_node(actor, component_class, nth, &reason);
+		if (node == 0) {
+			luaL_error(L, "%s", reason);
+		}
+
+		if (!script_signal::send(node, plug, &reason)) {
+			luaL_error(L, "%s", reason);
+		}
+
+		return 0;
+	}
+
 	static const luaL_Reg g_api[] = {
 		{ "log", l_log },
 		{ "on_frame", l_on_frame },
@@ -1694,6 +1863,12 @@ namespace rivet_hook::scripting {
 		{ "notify", l_notify },
 		{ "vanity_equip", l_vanity_equip },
 		{ "vanity_owns", l_vanity_owns },
+		{ "configs", l_configs },
+		{ "config", l_config },
+		{ "config_set", l_config_set },
+		{ "hash", l_hash },
+		{ "signal", l_signal },
+		{ "script_nodes", l_script_nodes },
 		{ nullptr, nullptr },
 	};
 
