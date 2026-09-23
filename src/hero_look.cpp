@@ -97,6 +97,13 @@ namespace rivet_hook::hero_look {
 	// what the hero wears now, and what waits for its asset to load
 	static std::string g_worn_path;
 	static uint32_t g_worn_actor = 0;
+	static bool g_worn_anims = false;
+
+	// a respawn builds a new hero actor with its own look. the worn look goes back
+	// on once the new hero has been there this many pumps
+	static uint32_t g_respawned_actor = 0;
+	static int32_t g_respawned_pumps = 0;
+	constexpr int32_t RESPAWN_SETTLE_PUMPS = 60;
 	static std::string g_pending_path;
 	static Asset *g_pending_asset = nullptr;
 	static std::string g_last_error;
@@ -623,6 +630,7 @@ namespace rivet_hook::hero_look {
 		}
 
 		g_worn_path = path;
+		g_worn_anims = anims;
 		return Result::Applied;
 	}
 
@@ -660,6 +668,7 @@ namespace rivet_hook::hero_look {
 		after_switch(AfterSwitch::RebuildSkin, hero.handle, switched, hero.actor->actorAsset->assetId);
 		g_worn_path.clear();
 		g_worn_actor = 0;
+		g_respawned_actor = 0;
 		return true;
 	}
 
@@ -705,9 +714,48 @@ namespace rivet_hook::hero_look {
 		g_output.flush();
 	}
 
+	// puts the worn look back on a hero that respawned, once it has settled
+	static auto
+	reapply_after_respawn() -> void {
+		if (g_worn_path.empty() || g_pending_asset != nullptr || g_after != AfterSwitch::None || !game_thread::on_game_thread()) {
+			return;
+		}
+
+		const auto hero = scene_query::hero();
+		if (hero == 0 || hero == g_worn_actor) {
+			g_respawned_actor = 0;
+			return;
+		}
+
+		if (hero != g_respawned_actor) {
+			g_respawned_actor = hero;
+			g_respawned_pumps = 0;
+			return;
+		}
+
+		if (++g_respawned_pumps < RESPAWN_SETTLE_PUMPS) {
+			return;
+		}
+
+		g_respawned_actor = 0;
+		const auto path = g_worn_path;
+		const char *reason = nullptr;
+		const auto result = request(path.c_str(), g_worn_anims, &reason);
+		if (result == Result::Failed) {
+			// no retry loop on a hero it cannot be put on
+			g_last_error = reason != nullptr ? reason : "refused";
+			g_worn_path.clear();
+			g_worn_actor = 0;
+		}
+
+		g_output << "[hero_look] the hero respawned, " << path << ": " << (result == Result::Failed ? g_last_error.c_str() : result == Result::Applied ? "put back on" : "loading") << "\n";
+		g_output.flush();
+	}
+
 	auto
 	pump() -> void {
 		run_after_switch();
+		reapply_after_respawn();
 
 		if (g_pending_asset == nullptr || !game_thread::on_game_thread()) {
 			return;
@@ -744,6 +792,7 @@ namespace rivet_hook::hero_look {
 		}
 
 		g_worn_path = path;
+		g_worn_anims = anims;
 		g_last_error.clear();
 	}
 

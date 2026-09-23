@@ -370,9 +370,11 @@ after it finishes. Without `anims` the model only animates properly when it
 shares Rivet's skeleton. With it, the asset's own anim sets go on top of
 Rivet's once the model has switched, so anything they cover plays the
 character's own animation; moves only Rivet has still hold a bind pose. The
-sets come off again on restore. The look
-is lost when the hero respawns, and a cutscene that rebuilds the outfit can
-undo it; call `hero_look` again.
+sets come off again on restore.
+
+A respawned hero gets the look back about a second after it appears, with the
+same anims choice. A cutscene that rebuilds the outfit can still undo it; call
+`hero_look` again.
 
 ### Configs
 
