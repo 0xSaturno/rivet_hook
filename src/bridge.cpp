@@ -18,6 +18,8 @@
 #include "ddl_inspector.hpp"
 #include "ddl_visit.hpp"
 #include "events.hpp"
+#include "time_scale.hpp"
+#include "camera.hpp"
 #include "game/scene_manager.hpp"
 #include "game_thread.hpp"
 #include "scene_query.hpp"
@@ -1312,6 +1314,96 @@ namespace rivet_hook::bridge {
 		return ok(result);
 	}
 
+	// ----------------------------------------------------------- time scale --
+
+	static auto
+	parse_channel(const std::vector<std::string> &args, const size_t at, int32_t &channel) -> bool {
+		channel = time_scale::channel_index(args.size() > at ? args[at].c_str() : "Game");
+		return channel >= 0;
+	}
+
+	// time.scale <scale> [channel] [ramp]
+	static auto
+	cmd_time_scale(const std::vector<std::string> &args) -> std::string {
+		if (args.size() < 2) {
+			return error("usage: time.scale <scale> [channel] [ramp]");
+		}
+
+		if (!time_scale::ready()) {
+			return error(time_scale::unavailable_reason());
+		}
+
+		float scale = 1.0f;
+		float ramp = -1.0f;
+		try {
+			scale = std::stof(args[1]);
+			if (args.size() > 3) {
+				ramp = std::stof(args[3]);
+			}
+		} catch (const std::exception &) {
+			return error("could not parse a number");
+		}
+
+		int32_t channel = -1;
+		if (!parse_channel(args, 2, channel)) {
+			return error("no time scale channel called " + args[2]);
+		}
+
+		const char *reason = nullptr;
+		if (!time_scale::set(channel, scale, ramp, &reason)) {
+			return error(reason != nullptr ? reason : "refused");
+		}
+
+		return ok(time_scale::status());
+	}
+
+	// time.clear [channel]
+	static auto
+	cmd_time_clear(const std::vector<std::string> &args) -> std::string {
+		if (!time_scale::ready()) {
+			return error(time_scale::unavailable_reason());
+		}
+
+		int32_t channel = -1;
+		if (!parse_channel(args, 1, channel)) {
+			return error("no time scale channel called " + args[1]);
+		}
+
+		const char *reason = nullptr;
+		if (!time_scale::clear(channel, &reason)) {
+			return error(reason != nullptr ? reason : "refused");
+		}
+
+		return ok(time_scale::status());
+	}
+
+	// camera.fov [scale]
+	static auto
+	cmd_camera_fov(const std::vector<std::string> &args) -> std::string {
+		if (const auto *why = camera::fov_unavailable_reason(); why[0] != '\0') {
+			return error(why);
+		}
+
+		nlohmann::json result;
+		result["was"] = camera::fov_scale();
+		if (args.size() > 1) {
+			float scale = 1.0f;
+			try {
+				scale = std::stof(args[1]);
+			} catch (const std::exception &) {
+				return error("could not parse the scale");
+			}
+
+			const char *reason = nullptr;
+			if (!camera::set_fov_scale(scale, &reason)) {
+				return error(reason != nullptr ? reason : "refused");
+			}
+		}
+
+		result["now"] = camera::fov_scale();
+		return ok(result);
+	}
+
 	// runs on the engine thread, inside pump
 	static auto
 	execute(const std::string &line) -> std::string {
@@ -1395,6 +1487,22 @@ namespace rivet_hook::bridge {
 
 		if (command == "mem.read") {
 			return cmd_mem_read(args);
+		}
+
+		if (command == "camera.fov") {
+			return cmd_camera_fov(args);
+		}
+
+		if (command == "time.status") {
+			return ok(time_scale::status());
+		}
+
+		if (command == "time.scale") {
+			return cmd_time_scale(args);
+		}
+
+		if (command == "time.clear") {
+			return cmd_time_clear(args);
 		}
 
 		if (command == "event.status") {
@@ -1542,7 +1650,7 @@ namespace rivet_hook::bridge {
 		if (args[0] == "help") {
 			nlohmann::json result;
 			result["commands"] = nlohmann::json::array_t {
-				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]"
+				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]"
 			};
 			return ok(result);
 		}

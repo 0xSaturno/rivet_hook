@@ -15,6 +15,8 @@
 #include "ddl.hpp"
 #include "bridge.hpp"
 #include "events.hpp"
+#include "time_scale.hpp"
+#include "camera.hpp"
 #include "overlay.hpp"
 #include "scripting.hpp"
 #endif
@@ -282,6 +284,8 @@ namespace rivet_hook {
 			#ifndef RIVET_ONLY_LOADER
 			Overlay::Init();
 			events::init();
+			time_scale::init();
+			camera::init();
 			bridge::init();
 			scripting::init();
 			g_output << "[rivet] starting ddl thread\n";

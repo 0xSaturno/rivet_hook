@@ -106,6 +106,21 @@ namespace rivet_hook {
 
 	constexpr uint32_t EVENT_SYSTEM_ADDRESS = 0x7;
 
+	// time scale. (system, channel, scale, ramp, context, fx type)
+	MAKE_SIGNATURE(SET_CHANNEL_TIME_SCALE, "83 FA 18 0F 87 ?? ?? ?? ?? 57 48 83 EC 40 0F 29 74 24 30 48 8B F9 0F 29 7C 24 20 0F 28 F3")
+	// (system, channel). also drops the components driving that channel
+	MAKE_SIGNATURE(CLEAR_CHANNEL_TIME_SCALE, "48 89 5C 24 08 57 48 83 EC 50 48 63 DA 48 8B F9 83 FB 18 0F 87")
+	// a gameplay call site that sets the game channel through the global system
+	MAKE_SIGNATURE(TIME_SCALE_SYSTEM, "48 8D 0D ?? ?? ?? ?? 45 33 C0 C7 83 ?? ?? ?? ?? 00 00 80 3F E8")
+
+	constexpr uint32_t TIME_SCALE_SYSTEM_ADDRESS = 0x3;
+
+	// camera. the graphics settings apply stores the fov slider into the camera
+	// system twice; the second store is the multiplier the view is built with
+	MAKE_SIGNATURE(CAMERA_FOV_SCALE, "F3 0F 59 05 ?? ?? ?? ?? 89 35 ?? ?? ?? ?? F3 0F 11 05 ?? ?? ?? ?? F3 0F 11 05 ?? ?? ?? ??")
+
+	constexpr uint32_t CAMERA_FOV_SCALE_ADDRESS = 0x1A;
+
 	constexpr uint32_t HERO_SYSTEM_ADDRESS = 0x3;
 	constexpr uint32_t SCENE_MANAGER_ADDRESS = 0x3;
 	constexpr uint32_t ACTOR_ASSET_MANAGER_ADDRESS = 0x3;

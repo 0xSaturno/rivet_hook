@@ -101,6 +101,12 @@ namespace rivet_hook::game_thread {
 	}
 
 	auto
+	on_game_thread() -> bool {
+		const auto id = g_game_thread_id.load();
+		return id != 0 && id == GetCurrentThreadId();
+	}
+
+	auto
 	status() -> nlohmann::json {
 		const auto last = g_last_game_pump_ms.load();
 

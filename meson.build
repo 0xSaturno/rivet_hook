@@ -120,12 +120,14 @@ if not get_option('loader_only')
 
     sources += [
         'src/bridge.cpp',
+        'src/camera.cpp',
         'src/ddl.cpp',
         'src/ddl_visit.cpp',
         'src/ddl_inspector.cpp',
         'src/events.cpp',
         'src/game_thread.cpp',
         'src/scene_query.cpp',
+        'src/time_scale.cpp',
         'src/watch.cpp',
         'src/overlay.cpp',
         'src/overlay_core.cpp',

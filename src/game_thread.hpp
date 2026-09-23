@@ -21,6 +21,12 @@ namespace rivet_hook::game_thread {
 	auto
 	present_tick() -> void;
 
+	// true on the engine's game thread. the pump falls back to the render thread
+	// while actor updates are stopped, and anything that adds or destroys
+	// components has to refuse to run there.
+	auto
+	on_game_thread() -> bool;
+
 	// which thread each pump ran on and how recently, for the bridge's ping
 	auto
 	status() -> nlohmann::json;

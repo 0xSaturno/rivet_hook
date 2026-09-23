@@ -248,6 +248,29 @@ written `Destination.Position` (Y is up). Warps go exactly where they are told,
 off a ledge included. `python tools/rivetctl.py event.status` says whether the
 class table read back sane after a game patch.
 
+### Time and camera
+
+| | |
+|---|---|
+| `rivet.time_scale()` | the speed the game is running at right now |
+| `rivet.time_scale(scale, [channel], [ramp])` | ask for `scale` on a channel, `"Game"` by default |
+| `rivet.clear_time_scale([channel])` | put a channel back to normal speed |
+| `rivet.fov_scale([scale])` | read or set the multiplier on the camera's field of view |
+
+The game runs at the lowest scale any of its 25 time scale channels asks for
+(the cinematic channel outranks the rest), and eases toward it at `ramp` per
+second, 30 unless given. Physics follows the same scale. Channels are named as
+the game names them, with or without the leading `k`: `"Game"`, `"Dodge"`,
+`"HeroAimMode"`, or a number `0`-`24`. A scale holds until it is cleared or the
+level unloads, and a script's `"Game"` request does not stop the game's own
+slow-mo moments from going lower. Both calls refuse to run while the pump is on
+the render thread (during loads), because clearing a channel destroys the
+components that were driving it.
+
+`fov_scale` is the same value the game's field of view slider writes, so it is
+often 1.25 rather than 1.0, and applying the graphics settings puts the slider's
+value back. Kept between 0.1 and 4.
+
 ### The game UI
 
 | | |

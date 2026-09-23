@@ -25,6 +25,8 @@ extern "C" {
 #include "ddl_inspector.hpp"
 #include "ddl_visit.hpp"
 #include "events.hpp"
+#include "time_scale.hpp"
+#include "camera.hpp"
 #include "game/scene_manager.hpp"
 #include "game_thread.hpp"
 #include "runtime.hpp"
@@ -1358,6 +1360,87 @@ namespace rivet_hook::scripting {
 		return 1;
 	}
 
+	// ------------------------------------------------------------- time scale --
+
+	// the channel argument at arg, "Game" when it is absent
+	static auto
+	check_channel(lua_State *L, const int arg) -> int32_t {
+		if (!time_scale::ready()) {
+			luaL_error(L, "time scale is unavailable: %s", time_scale::unavailable_reason());
+		}
+
+		const auto *name = luaL_optstring(L, arg, "Game");
+		const auto channel = time_scale::channel_index(name);
+		if (channel < 0) {
+			luaL_error(L, "there is no time scale channel called %s", name);
+		}
+
+		return channel;
+	}
+
+	// rivet.time_scale() -> the speed the game runs at now.
+	// rivet.time_scale(scale, [channel], [ramp]) asks for scale on a channel, Game
+	// by default. the game runs at the lowest scale any channel asks for, eased
+	// toward at ramp per second.
+	static auto
+	l_time_scale(lua_State *L) -> int {
+		if (lua_isnoneornil(L, 1)) {
+			if (!time_scale::ready()) {
+				luaL_error(L, "time scale is unavailable: %s", time_scale::unavailable_reason());
+			}
+
+			lua_pushnumber(L, time_scale::applied());
+			return 1;
+		}
+
+		const auto scale = static_cast<float>(luaL_checknumber(L, 1));
+		const auto channel = check_channel(L, 2);
+		const auto ramp = static_cast<float>(luaL_optnumber(L, 3, -1.0));
+
+		const char *reason = "the change was refused";
+		if (!time_scale::set(channel, scale, ramp, &reason)) {
+			luaL_error(L, "%s", reason);
+		}
+
+		return 0;
+	}
+
+	// rivet.clear_time_scale([channel]): the channel back to normal speed
+	static auto
+	l_clear_time_scale(lua_State *L) -> int {
+		const auto channel = check_channel(L, 1);
+
+		const char *reason = "the change was refused";
+		if (!time_scale::clear(channel, &reason)) {
+			luaL_error(L, "%s", reason);
+		}
+
+		return 0;
+	}
+
+	// rivet.fov_scale() -> the multiplier on the camera's field of view.
+	// rivet.fov_scale(scale) sets it. the game's fov slider owns the same value
+	// and puts it back whenever the graphics settings are applied.
+	static auto
+	l_fov_scale(lua_State *L) -> int {
+		if (lua_isnoneornil(L, 1)) {
+			if (const auto *why = camera::fov_unavailable_reason(); why[0] != '\0') {
+				luaL_error(L, "fov scale is unavailable: %s", why);
+			}
+
+			lua_pushnumber(L, camera::fov_scale());
+			return 1;
+		}
+
+		const auto scale = static_cast<float>(luaL_checknumber(L, 1));
+		const char *reason = "the change was refused";
+		if (!camera::set_fov_scale(scale, &reason)) {
+			luaL_error(L, "%s", reason);
+		}
+
+		return 0;
+	}
+
 	static const luaL_Reg g_api[] = {
 		{ "log", l_log },
 		{ "on_frame", l_on_frame },
@@ -1388,6 +1471,9 @@ namespace rivet_hook::scripting {
 		{ "ui_publish", l_ui_publish },
 		{ "on_event", l_on_event },
 		{ "queue_event", l_queue_event },
+		{ "time_scale", l_time_scale },
+		{ "clear_time_scale", l_clear_time_scale },
+		{ "fov_scale", l_fov_scale },
 		{ nullptr, nullptr },
 	};
 

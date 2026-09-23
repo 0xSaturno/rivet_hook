@@ -74,6 +74,23 @@ the class name the rest of the line is a JSON object with the same keys as the
 Lua options table. A handle may be written as a number, as text in any base, or
 as `"hero"`.
 
+## Time and camera
+
+```bash
+python tools/rivetctl.py time.status
+python tools/rivetctl.py time.scale 0.5
+python tools/rivetctl.py time.scale 0.25 Game 5
+python tools/rivetctl.py time.clear
+python tools/rivetctl.py camera.fov
+python tools/rivetctl.py camera.fov 1.6
+```
+
+`time.scale <scale> [channel] [ramp]` and `time.clear [channel]` are
+`rivet.time_scale` and `rivet.clear_time_scale`; `time.status` lists the
+applied scale and every channel asking for something other than 1.
+`camera.fov [scale]` reads or sets the field of view multiplier. See
+[LUA_SCRIPTING.md](LUA_SCRIPTING.md#time-and-camera).
+
 ## Wire format
 
 One connection, one client at a time. Each message, request or response, is a
