@@ -309,6 +309,20 @@ namespace rivet_hook::bridge {
 		nlohmann::json result;
 		result["was"] = { actor->object->transform_matrix[3][0], actor->object->transform_matrix[3][1], actor->object->transform_matrix[3][2] };
 
+		// the hero is warped the way the game warps it, which sticks. the event is
+		// delivered later in the frame, so "now" still shows where it was
+		if (handle.value == scene_query::hero() && events::ready()) {
+			const char *reason = nullptr;
+			if (!events::warp(handle.value, position, &reason)) {
+				return error(std::string("could not warp the hero: ") + (reason != nullptr ? reason : "refused"));
+			}
+
+			result["method"] = "warp";
+			result["to"] = { position[0], position[1], position[2] };
+			return ok(result);
+		}
+
+		result["method"] = "write";
 		memcpy(&actor->object->transform_matrix[3], position, sizeof(position));
 
 		result["now"] = { actor->object->transform_matrix[3][0], actor->object->transform_matrix[3][1], actor->object->transform_matrix[3][2] };

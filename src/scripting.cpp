@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -781,15 +782,33 @@ namespace rivet_hook::scripting {
 		return 9;
 	}
 
-	// the transform is a byproduct: the write lands and the engine stamps over it
-	// within the frame. useful for a nudge, not for holding a position.
+	// the hero is warped the way the game warps it, which sticks. for anything else
+	// the transform is written directly, and that is a byproduct: the write lands
+	// and the engine stamps over it within the frame, so it is a nudge, not a way
+	// to hold a position. answers "warp" or "write" for which one happened.
 	static auto
 	l_set_position(lua_State *L) -> int {
 		auto *actor = resolve_actor(L, 1);
+		const auto handle = static_cast<uint32_t>(lua_tointeger(L, 1));
 
 		float position[3];
 		for (auto axis = 0; axis < 3; ++axis) {
-			position[axis] = static_cast<float>(luaL_checknumber(L, 2 + axis));
+			const auto value = luaL_checknumber(L, 2 + axis);
+			if (!std::isfinite(value)) {
+				luaL_error(L, "coordinates must be finite");
+			}
+
+			position[axis] = static_cast<float>(value);
+		}
+
+		if (handle == scene_query::hero() && events::ready()) {
+			const char *reason = "the warp was refused";
+			if (!events::warp(handle, position, &reason)) {
+				luaL_error(L, "could not warp the hero: %s", reason);
+			}
+
+			lua_pushstring(L, "warp");
+			return 1;
 		}
 
 		if (actor->object == nullptr || !ddl::is_writable(actor->object, sizeof(SceneObject))) {
@@ -797,7 +816,8 @@ namespace rivet_hook::scripting {
 		}
 
 		memcpy(&actor->object->transform_matrix[3], position, sizeof(position));
-		return 0;
+		lua_pushstring(L, "write");
+		return 1;
 	}
 
 	static auto

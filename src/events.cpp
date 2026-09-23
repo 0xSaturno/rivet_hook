@@ -305,6 +305,52 @@ namespace rivet_hook::events {
 	}
 
 	auto
+	warp(const uint32_t handle, const float position[3], const char **reason) -> bool {
+		static const char *const AXES[] = { "Destination.Position.X", "Destination.Position.Y", "Destination.Position.Z" };
+
+		const auto *info = find_class("PerformWarpEvent");
+		if (info == nullptr) {
+			if (reason != nullptr) {
+				*reason = ready() ? "PerformWarpEvent is not registered" : unavailable_reason();
+			}
+
+			return false;
+		}
+
+		// once queued the event goes out whatever happens next, and one with its
+		// default destination would warp the actor to the origin
+		for (const auto *axis : AXES) {
+			if (!has_field(info, axis)) {
+				if (reason != nullptr) {
+					*reason = "PerformWarpEvent has no Destination.Position";
+				}
+
+				return false;
+			}
+		}
+
+		Request request;
+		request.targets.emplace_back(handle);
+		request.broadcast = false;
+
+		auto *event = queue(info, request, reason);
+		if (event == nullptr) {
+			return false;
+		}
+
+		for (auto axis = 0; axis < 3; ++axis) {
+			ddl::Value value {};
+			value.kind = ddl::ValueKind::Real;
+			value.as_real = position[axis];
+			if (!set_field(info, event, AXES[axis], value, reason)) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	auto
 	has_field(const EventClassInfo *info, const char *path) -> bool {
 		if (info == nullptr) {
 			return false;

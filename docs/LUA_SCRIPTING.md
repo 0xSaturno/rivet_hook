@@ -77,9 +77,14 @@ next frame, not inline.
 | `rivet.find_component(class, [limit], [exact])` | handles of actors holding a live component of that class or one derived from it (`exact` skips derived), `limit` defaults to 64 |
 | `rivet.name(handle)` | actor name |
 | `rivet.position(handle)` | `x, y, z` |
-| `rivet.set_position(handle, x, y, z)` | |
+| `rivet.set_position(handle, x, y, z)` | `"warp"` for the hero, `"write"` for anything else |
 | `rivet.components(handle)` | array of component type names |
 | `rivet.dump(handle)` | writes `rivet_actor_<name>.json`, returns the path |
+
+`set_position` on the hero sends a `PerformWarpEvent` (see [Events](#events)), so
+the move sticks and the camera follows; the warp lands later in the same frame,
+so `rivet.position` reads the old spot until the next one. On any other actor it
+writes the transform, which the engine overwrites within a frame.
 
 `find_actor` prefers an exact name and falls back to the first substring match,
 because substring alone is not good enough: in Megalopolis `"Rivet"` matches

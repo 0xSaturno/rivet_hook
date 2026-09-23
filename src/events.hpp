@@ -62,6 +62,13 @@ namespace rivet_hook::events {
 	auto
 	queue(const game::EventClassInfo *info, const Request &request, const char **reason) -> uint8_t *;
 
+	// moves an actor the way the game does, with a PerformWarpEvent aimed at it.
+	// unlike a transform write this sticks, and the warp handler resets the camera
+	// and the actor's state as the event's defaults ask. false with the reason on
+	// failure.
+	auto
+	warp(uint32_t handle, const float position[3], const char **reason) -> bool;
+
 	// writes one field of a queued event. path may step into nested structs,
 	// "Destination.Position.X".
 	auto
