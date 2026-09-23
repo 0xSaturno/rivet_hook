@@ -349,6 +349,28 @@ choice is the same one the pause menu makes, and it may be saved like one.
 Pieces the hero has not unlocked are refused: the game looks the bundle's config
 up without checking it exists, so ownership is checked first.
 
+### Hero model
+
+| | |
+|---|---|
+| `rivet.hero_look(actor_asset)` | the hero wears that actor asset's model; `"applied"`, or `"loading"` while the asset loads |
+| `rivet.hero_look()` | the hero's own model and outfit back; `"restored"` |
+
+```lua
+rivet.hero_look("characters/hero/hero_Kit/hero_kit.actor")
+```
+
+Only the look changes. Rivet keeps her moves, abilities, voice and weapons: the
+hook makes the same model switch the game's own hero transformation makes and
+skips the rest of it. Her outfit comes off while the other model is worn, and
+comes back on restore.
+
+An asset that is not loaded yet is loaded first and put on by the first pump
+after it finishes. The model only animates properly when it shares Rivet's
+skeleton; anything else moves with her but mostly holds its bind pose. The look
+is lost when the hero respawns, and a cutscene that rebuilds the outfit can
+undo it; call `hero_look` again.
+
 ### Configs
 
 | | |

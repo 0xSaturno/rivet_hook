@@ -29,6 +29,7 @@ extern "C" {
 #include "camera.hpp"
 #include "hud.hpp"
 #include "vanity.hpp"
+#include "hero_look.hpp"
 #include "configs.hpp"
 #include "script_signal.hpp"
 #include "game/scene_manager.hpp"
@@ -1654,6 +1655,32 @@ namespace rivet_hook::scripting {
 		return 1;
 	}
 
+	// ------------------------------------------------------------- hero look --
+
+	// rivet.hero_look(actor_asset_path) -> "applied" | "loading": the hero wears
+	// that actor asset's model, its gameplay unchanged. a loading asset is applied
+	// by the pump once it is in. rivet.hero_look() puts the hero's own look back.
+	static auto
+	l_hero_look(lua_State *L) -> int {
+		const char *reason = "refused";
+		if (lua_isnoneornil(L, 1)) {
+			if (!hero_look::restore(&reason)) {
+				luaL_error(L, "%s", reason);
+			}
+
+			lua_pushstring(L, "restored");
+			return 1;
+		}
+
+		const auto result = hero_look::request(luaL_checkstring(L, 1), &reason);
+		if (result == hero_look::Result::Failed) {
+			luaL_error(L, "%s", reason);
+		}
+
+		lua_pushstring(L, result == hero_look::Result::Applied ? "applied" : "loading");
+		return 1;
+	}
+
 	// --------------------------------------------------------------- configs --
 
 	// the config named by arg: an asset path or 16 hex digits, loaded right now
@@ -1863,6 +1890,7 @@ namespace rivet_hook::scripting {
 		{ "notify", l_notify },
 		{ "vanity_equip", l_vanity_equip },
 		{ "vanity_owns", l_vanity_owns },
+		{ "hero_look", l_hero_look },
 		{ "configs", l_configs },
 		{ "config", l_config },
 		{ "config_set", l_config_set },

@@ -143,6 +143,34 @@ namespace rivet_hook {
 	// (VanityInventoryManager, bundle asset id, hero type) -> whether it is owned
 	MAKE_SIGNATURE(VANITY_HAS_BUNDLE, "40 55 56 41 56 41 57 48 83 EC 28 41 8B F0 4C 8B F1 41 83 F8 04 75 03 8B 71 48")
 
+	// hero look. TransformationManager::HandleTransformationEvent, the engine's own
+	// whole-body model swap: it looks the target actor asset up, creates a scene
+	// object from it and switches the actor's ModelInst to that object's model
+	MAKE_SIGNATURE(TRANSFORMATION_HANDLE_EVENT, "40 53 55 57 48 83 EC 30 48 8B 01 48 8B DA 8B AA 38 01 00 00 48 8B F9 FF 50 50 3B E8 0F 84")
+	// HeroTransformationManager::OnTransformationPostActivate (component, asset).
+	// rebuilds the actor's HeroSkinManager for the hero type its HeroConfigManager
+	// holds, from a stack prius, through ReinitializeComponentFromPrius
+	MAKE_SIGNATURE(HERO_TRANSFORMATION_POST_ACTIVATE, "48 89 5C 24 08 57 48 83 EC 30 48 8B D9 48 8D 3D ?? ?? ?? ?? 48 89 7C 24 20 48 8D 4C 24 20 E8 ?? ?? ?? ?? 90 48 8B 4B 10 48 8D 15")
+	// SkinManagerBase::RemoveAllSkinItemsByPart (skin manager)
+	MAKE_SIGNATURE(SKIN_REMOVE_ALL_ITEMS, "40 56 57 41 54 48 83 EC 30 44 8B 61 4C 33 F6 48 8B F9 45 85 E4 0F 84")
+
+	// (actor asset manager, asset id) -> loaded actor asset or null
+	constexpr uint32_t TRANSFORMATION_ACTOR_ASSETS_ADDRESS = 0x95;
+	constexpr uint32_t TRANSFORMATION_LOOKUP_ACTOR_ASSET_ADDRESS = 0x9D;
+	// (handle *) -> ModelInst or null
+	constexpr uint32_t TRANSFORMATION_RESOLVE_MODEL_INST_ADDRESS = 0xE2;
+	// (scene, out handle *, object asset name, scene object, 0), both from the actor asset
+	constexpr uint32_t TRANSFORMATION_CREATE_SCENE_OBJECT_ADDRESS = 0x107;
+	// (ModelInst, Model, deferred)
+	constexpr uint32_t TRANSFORMATION_SWITCH_MODEL_ADDRESS = 0x12B;
+	// (ModelInst)
+	constexpr uint32_t TRANSFORMATION_DESTROY_MODEL_INST_ADDRESS = 0x133;
+	// the HeroSkinManagerPrius vtable, its ComponentClassInfo, and
+	// ReinitializeComponentFromPrius (component, class info, prius)
+	constexpr uint32_t HERO_POST_ACTIVATE_PRIUS_VTABLE_ADDRESS = 0x10;
+	constexpr uint32_t HERO_POST_ACTIVATE_SKIN_CLASS_ADDRESS = 0x61;
+	constexpr uint32_t HERO_POST_ACTIVATE_REINIT_ADDRESS = 0x69;
+
 	// script signals. the plug send loads the global signal queue and calls its
 	// AddEntry(queue, component handle *, input plug hash, output plug hash, source)
 	MAKE_SIGNATURE(SCRIPT_SIGNAL_SEND, "48 8D 0D ?? ?? ?? ?? 44 8B CD 89 44 24 20 E8")

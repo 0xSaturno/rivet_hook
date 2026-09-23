@@ -118,6 +118,18 @@ python tools/rivetctl.py vanity.equip configs/hero/vanity/vanitybundles/carbonox
 
 Both act on the hero. See [LUA_SCRIPTING.md](LUA_SCRIPTING.md#outfits).
 
+## Hero model
+
+```bash
+python tools/rivetctl.py hero.look characters/hero/hero_Kit/hero_kit.actor
+python tools/rivetctl.py hero.look
+python tools/rivetctl.py hero.restore
+```
+
+`hero.look <actor asset>` is `rivet.hero_look`; with no path it reports what is
+worn and what is still loading. `hero.restore` puts the hero's own look back.
+See [LUA_SCRIPTING.md](LUA_SCRIPTING.md#hero-model).
+
 ## Configs
 
 ```bash

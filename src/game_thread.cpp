@@ -14,6 +14,7 @@
 #include "ddl_visit.hpp"
 #include "camera.hpp"
 #include "events.hpp"
+#include "hero_look.hpp"
 #include "runtime.hpp"
 #include "scripting.hpp"
 #include "signature.hpp"
@@ -47,6 +48,7 @@ namespace rivet_hook::game_thread {
 		bridge::pump();
 		scripting::pump();
 		camera::pump();
+		hero_look::pump();
 	}
 
 	static auto

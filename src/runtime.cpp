@@ -19,6 +19,7 @@
 #include "camera.hpp"
 #include "hud.hpp"
 #include "vanity.hpp"
+#include "hero_look.hpp"
 #include "configs.hpp"
 #include "script_signal.hpp"
 #include "overlay.hpp"
@@ -294,6 +295,7 @@ namespace rivet_hook {
 			camera::init();
 			hud::init();
 			vanity::init();
+			hero_look::init();
 			configs::init();
 			script_signal::init();
 			bridge::init();
