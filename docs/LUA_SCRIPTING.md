@@ -271,6 +271,36 @@ components that were driving it.
 often 1.25 rather than 1.0, and applying the graphics settings puts the slider's
 value back. Kept between 0.1 and 4.
 
+#### Free camera
+
+| | |
+|---|---|
+| `rivet.camera()` | `x, y, z, yaw, pitch, fov` of the view the player sees |
+| `rivet.camera_detach()` | the view stops following the game, starting where the game camera is |
+| `rivet.camera_set(x, y, z, [yaw], [pitch], [fov])` | move the detached view; left out keeps current |
+| `rivet.camera_attach()` | give the view back to the game |
+| `rivet.camera_detached()` | whether it is detached |
+| `rivet.shake_block([blocked])` | override camera shake on the view (`true` blocks, `false` allows, `"game"` hands it back to the option); returns whether it is blocked |
+
+Angles are degrees. Yaw 0 looks down +Z and turns toward +X, pitch is positive
+looking up and is kept within ±89. `fov` is the camera's own field of view,
+before `fov_scale`.
+
+Detaching hands the renderer a camera the hook owns, through the engine's own
+debug camera slot, while the game keeps updating its real camera underneath. So
+Rivet still answers to input, and aiming and camera relative movement go by the
+game camera, not the free one. Sound follows the free camera. The view stays
+detached across level loads until `camera_attach`.
+
+The game copies its camera shake option into the bit `shake_block` reads every
+frame, so with shake turned off in the options it already reads `true`, and an
+override is held and re-applied every pump until `shake_block("game")`. Shake
+only ever moves the game's camera, never the free one, and shakes the game marks
+as forced get through either way.
+
+[`scripts/freecam.lua`](../scripts/freecam.lua) is a ready to use free camera
+on the numpad and the arrow keys.
+
 ### The game UI
 
 | | |

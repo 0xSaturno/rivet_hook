@@ -121,6 +121,12 @@ namespace rivet_hook {
 
 	constexpr uint32_t CAMERA_FOV_SCALE_ADDRESS = 0x1A;
 
+	// two gameplay reads of a camera matrix through the global camera system. both
+	// matches load the same address
+	MAKE_SIGNATURE(CAMERA_SYSTEM, "48 8D 0D ?? ?? ?? ?? F2 0F 10 00 F2 0F 11 44 24 3C")
+
+	constexpr uint32_t CAMERA_SYSTEM_ADDRESS = 0x3;
+
 	constexpr uint32_t HERO_SYSTEM_ADDRESS = 0x3;
 	constexpr uint32_t SCENE_MANAGER_ADDRESS = 0x3;
 	constexpr uint32_t ACTOR_ASSET_MANAGER_ADDRESS = 0x3;

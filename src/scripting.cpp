@@ -1441,6 +1441,107 @@ namespace rivet_hook::scripting {
 		return 0;
 	}
 
+	// ------------------------------------------------------------ free camera --
+
+	static auto
+	check_free_camera(lua_State *L) -> void {
+		if (const auto *why = camera::free_unavailable_reason(); why[0] != '\0') {
+			luaL_error(L, "the free camera is unavailable: %s", why);
+		}
+	}
+
+	// rivet.camera_detach(): the view stops following the game and stays where it
+	// is until rivet.camera_set moves it
+	static auto
+	l_camera_detach(lua_State *L) -> int {
+		check_free_camera(L);
+
+		const char *reason = "the camera could not be detached";
+		if (!camera::detach(&reason)) {
+			luaL_error(L, "%s", reason);
+		}
+
+		return 0;
+	}
+
+	static auto
+	l_camera_attach(lua_State *) -> int {
+		camera::attach();
+		return 0;
+	}
+
+	static auto
+	l_camera_detached(lua_State *L) -> int {
+		lua_pushboolean(L, camera::detached() ? 1 : 0);
+		return 1;
+	}
+
+	// rivet.camera() -> x, y, z, yaw, pitch, fov of the view the player sees
+	static auto
+	l_camera(lua_State *L) -> int {
+		check_free_camera(L);
+
+		camera::View view;
+		if (!camera::view(view)) {
+			luaL_error(L, "the camera is not readable");
+		}
+
+		for (const auto value : { view.position[0], view.position[1], view.position[2], view.yaw, view.pitch, view.fov }) {
+			lua_pushnumber(L, value);
+		}
+
+		return 6;
+	}
+
+	// rivet.camera_set(x, y, z, [yaw], [pitch], [fov]): moves the detached camera.
+	// anything left out keeps its current value.
+	static auto
+	l_camera_set(lua_State *L) -> int {
+		check_free_camera(L);
+
+		camera::View view;
+		if (!camera::view(view)) {
+			luaL_error(L, "the camera is not readable");
+		}
+
+		for (auto axis = 0; axis < 3; ++axis) {
+			view.position[axis] = static_cast<float>(luaL_checknumber(L, 1 + axis));
+		}
+
+		view.yaw = static_cast<float>(luaL_optnumber(L, 4, view.yaw));
+		view.pitch = static_cast<float>(luaL_optnumber(L, 5, view.pitch));
+		view.fov = static_cast<float>(luaL_optnumber(L, 6, view.fov));
+
+		const char *reason = "the camera could not be moved";
+		if (!camera::set_view(view, &reason)) {
+			luaL_error(L, "%s", reason);
+		}
+
+		return 0;
+	}
+
+	// rivet.shake_block([blocked]) -> whether shake is blocked, after the change.
+	// true or false holds an override until rivet.shake_block("game") hands the
+	// choice back to the game's camera shake option.
+	static auto
+	l_shake_block(lua_State *L) -> int {
+		if (lua_type(L, 1) == LUA_TSTRING) {
+			if (strcmp(lua_tostring(L, 1), "game") != 0) {
+				luaL_error(L, "shake_block takes true, false or \"game\"");
+			}
+
+			camera::release_shake();
+		} else if (!lua_isnoneornil(L, 1)) {
+			const char *reason = "the change was refused";
+			if (!camera::block_shake(lua_toboolean(L, 1) != 0, &reason)) {
+				luaL_error(L, "%s", reason);
+			}
+		}
+
+		lua_pushboolean(L, camera::shake_blocked() ? 1 : 0);
+		return 1;
+	}
+
 	static const luaL_Reg g_api[] = {
 		{ "log", l_log },
 		{ "on_frame", l_on_frame },
@@ -1474,6 +1575,12 @@ namespace rivet_hook::scripting {
 		{ "time_scale", l_time_scale },
 		{ "clear_time_scale", l_clear_time_scale },
 		{ "fov_scale", l_fov_scale },
+		{ "camera", l_camera },
+		{ "camera_detach", l_camera_detach },
+		{ "camera_attach", l_camera_attach },
+		{ "camera_detached", l_camera_detached },
+		{ "camera_set", l_camera_set },
+		{ "shake_block", l_shake_block },
 		{ nullptr, nullptr },
 	};
 

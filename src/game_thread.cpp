@@ -12,6 +12,7 @@
 
 #include "bridge.hpp"
 #include "ddl_visit.hpp"
+#include "camera.hpp"
 #include "events.hpp"
 #include "runtime.hpp"
 #include "scripting.hpp"
@@ -45,6 +46,7 @@ namespace rivet_hook::game_thread {
 		events::poll();
 		bridge::pump();
 		scripting::pump();
+		camera::pump();
 	}
 
 	static auto

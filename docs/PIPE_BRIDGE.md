@@ -83,7 +83,15 @@ python tools/rivetctl.py time.scale 0.25 Game 5
 python tools/rivetctl.py time.clear
 python tools/rivetctl.py camera.fov
 python tools/rivetctl.py camera.fov 1.6
+python tools/rivetctl.py camera.get
+python tools/rivetctl.py camera.detach
+python tools/rivetctl.py camera.set 10 25 -40 90 -20
+python tools/rivetctl.py camera.attach
+python tools/rivetctl.py camera.shake off
 ```
+
+`camera.set <x> <y> <z> [yaw] [pitch] [fov]` only works while detached.
+`camera.shake off` blocks camera shake, `on` lets it through again.
 
 `time.scale <scale> [channel] [ramp]` and `time.clear [channel]` are
 `rivet.time_scale` and `rivet.clear_time_scale`; `time.status` lists the

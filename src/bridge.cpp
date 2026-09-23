@@ -1404,6 +1404,100 @@ namespace rivet_hook::bridge {
 		return ok(result);
 	}
 
+	static auto
+	camera_state() -> nlohmann::json {
+		nlohmann::json result;
+		result["detached"] = camera::detached();
+		result["shake_blocked"] = camera::shake_blocked();
+		result["shake_override"] = camera::shake_overridden();
+
+		camera::View view;
+		if (camera::view(view)) {
+			result["position"] = { view.position[0], view.position[1], view.position[2] };
+			result["yaw"] = view.yaw;
+			result["pitch"] = view.pitch;
+			result["fov"] = view.fov;
+		}
+
+		return result;
+	}
+
+	// camera.get | camera.detach | camera.attach | camera.set x y z [yaw] [pitch] [fov]
+	// | camera.shake [on|off]
+	static auto
+	cmd_camera(const std::vector<std::string> &args) -> std::string {
+		const auto &command = args[0];
+		if (command == "camera.attach") {
+			camera::attach();
+			return ok(camera_state());
+		}
+
+		if (command == "camera.shake") {
+			if (args.size() > 1 && args[1] == "game") {
+				camera::release_shake();
+			} else if (args.size() > 1) {
+				if (args[1] != "on" && args[1] != "off") {
+					return error("usage: camera.shake [on|off|game], where on lets shake through and game hands it back to the option");
+				}
+
+				const char *reason = nullptr;
+				if (!camera::block_shake(args[1] == "off", &reason)) {
+					return error(reason != nullptr ? reason : "refused");
+				}
+			}
+
+			return ok(camera_state());
+		}
+
+		if (const auto *why = camera::free_unavailable_reason(); why[0] != '\0') {
+			return error(why);
+		}
+
+		if (command == "camera.detach") {
+			const char *reason = nullptr;
+			if (!camera::detach(&reason)) {
+				return error(reason != nullptr ? reason : "refused");
+			}
+
+			return ok(camera_state());
+		}
+
+		if (command == "camera.set") {
+			if (args.size() < 4) {
+				return error("usage: camera.set <x> <y> <z> [yaw] [pitch] [fov]");
+			}
+
+			camera::View view;
+			camera::view(view);
+			try {
+				for (size_t axis = 0; axis < 3; ++axis) {
+					view.position[axis] = std::stof(args[1 + axis]);
+				}
+
+				if (args.size() > 4) {
+					view.yaw = std::stof(args[4]);
+				}
+
+				if (args.size() > 5) {
+					view.pitch = std::stof(args[5]);
+				}
+
+				if (args.size() > 6) {
+					view.fov = std::stof(args[6]);
+				}
+			} catch (const std::exception &) {
+				return error("could not parse a number");
+			}
+
+			const char *reason = nullptr;
+			if (!camera::set_view(view, &reason)) {
+				return error(reason != nullptr ? reason : "refused");
+			}
+		}
+
+		return ok(camera_state());
+	}
+
 	// runs on the engine thread, inside pump
 	static auto
 	execute(const std::string &line) -> std::string {
@@ -1491,6 +1585,10 @@ namespace rivet_hook::bridge {
 
 		if (command == "camera.fov") {
 			return cmd_camera_fov(args);
+		}
+
+		if (command == "camera.get" || command == "camera.detach" || command == "camera.attach" || command == "camera.set" || command == "camera.shake") {
+			return cmd_camera(args);
 		}
 
 		if (command == "time.status") {
@@ -1650,7 +1748,7 @@ namespace rivet_hook::bridge {
 		if (args[0] == "help") {
 			nlohmann::json result;
 			result["commands"] = nlohmann::json::array_t {
-				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]"
+				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]"
 			};
 			return ok(result);
 		}
