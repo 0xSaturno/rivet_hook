@@ -17,6 +17,7 @@
 
 #include "ddl_inspector.hpp"
 #include "ddl_visit.hpp"
+#include "events.hpp"
 #include "game/scene_manager.hpp"
 #include "game_thread.hpp"
 #include "scene_query.hpp"
@@ -1044,6 +1045,259 @@ namespace rivet_hook::bridge {
 		return ok(result);
 	}
 
+	// --------------------------------------------------------------- events --
+
+	static auto
+	parse_limit(const std::vector<std::string> &args, const size_t at, const size_t fallback) -> size_t {
+		if (args.size() <= at) {
+			return fallback;
+		}
+
+		try {
+			return std::stoul(args[at]);
+		} catch (const std::exception &) {
+			return fallback;
+		}
+	}
+
+	static auto
+	events_unavailable() -> std::string {
+		return error(events::unavailable_reason());
+	}
+
+	static auto
+	cmd_event_classes(const std::vector<std::string> &args) -> std::string {
+		if (!events::ready()) {
+			return events_unavailable();
+		}
+
+		const auto *filter = args.size() > 1 ? args[1].c_str() : nullptr;
+		return ok(events::classes(filter, parse_limit(args, 2, 200)));
+	}
+
+	static auto
+	cmd_event_info(const std::vector<std::string> &args) -> std::string {
+		if (args.size() < 2) {
+			return error("usage: event.info <name|0xhash>");
+		}
+
+		if (!events::ready()) {
+			return events_unavailable();
+		}
+
+		const auto *info = events::find_class(args[1].c_str());
+		if (info == nullptr) {
+			return error("no event class called " + args[1]);
+		}
+
+		return ok(events::describe(info));
+	}
+
+	static auto
+	cmd_event_tail(const std::vector<std::string> &args) -> std::string {
+		if (!events::ready()) {
+			return events_unavailable();
+		}
+
+		// a lone number is the limit, not a filter
+		if (args.size() == 2 && !args[1].empty() && std::isdigit(static_cast<unsigned char>(args[1][0]))) {
+			return ok(events::tail(nullptr, parse_limit(args, 1, 50)));
+		}
+
+		const auto *filter = args.size() > 1 ? args[1].c_str() : nullptr;
+		return ok(events::tail(filter, parse_limit(args, 2, 50)));
+	}
+
+	static auto
+	cmd_event_watch(const std::vector<std::string> &args) -> std::string {
+		if (args.size() < 3 || (args[2] != "on" && args[2] != "off")) {
+			return error("usage: event.watch <name|0xhash> <on|off>");
+		}
+
+		if (!events::ready()) {
+			return events_unavailable();
+		}
+
+		const auto *info = events::find_class(args[1].c_str());
+		if (info == nullptr) {
+			return error("no event class called " + args[1]);
+		}
+
+		events::set_capture(info, args[2] == "on");
+		return ok(events::captures(nullptr, 0)["watching"]);
+	}
+
+	static auto
+	cmd_event_captures(const std::vector<std::string> &args) -> std::string {
+		const auto *filter = args.size() > 1 ? args[1].c_str() : nullptr;
+		return ok(events::captures(filter, parse_limit(args, 2, 20)));
+	}
+
+	// "hero", a number, or number text in any base stoul accepts
+	static auto
+	json_handle(const nlohmann::json &value, uint32_t &out) -> bool {
+		if (value.is_number_integer()) {
+			out = value.get<uint32_t>();
+			return true;
+		}
+
+		if (!value.is_string()) {
+			return false;
+		}
+
+		const auto text = value.get<std::string>();
+		if (text == "hero") {
+			out = scene_query::hero();
+			return out != 0;
+		}
+
+		EngineHandle handle {};
+		if (!parse_handle(text, handle)) {
+			return false;
+		}
+
+		out = handle.value;
+		return true;
+	}
+
+	// event.send <name> [json]. the json is the rest of the line:
+	//   { "target": "hero" | handle, "targets": [...], "sender": ..., "exclude": false,
+	//     "broadcast": bool, "radius": 0, "delay": 0, "position": [x, y, z],
+	//     "fields": { "ResetCamera": true, "Destination.Position.X": 12.5 } }
+	// with no target the event is broadcast, with targets it is not unless asked.
+	static auto
+	cmd_event_send(const std::string &rest) -> std::string {
+		const auto space = rest.find(' ');
+		const auto name = rest.substr(0, space);
+		if (name.empty()) {
+			return error("usage: event.send <name|0xhash> [json]");
+		}
+
+		auto options = nlohmann::json::object();
+		if (space != std::string::npos && rest.find_first_not_of(' ', space) != std::string::npos) {
+			options = nlohmann::json::parse(rest.substr(space + 1), nullptr, false);
+			if (options.is_discarded() || !options.is_object()) {
+				return error("the options have to be a json object");
+			}
+		}
+
+		if (!events::ready()) {
+			return events_unavailable();
+		}
+
+		const auto *info = events::find_class(name.c_str());
+		if (info == nullptr) {
+			return error("no event class called " + name);
+		}
+
+		events::Request request;
+		if (options.contains("target")) {
+			uint32_t handle = 0;
+			if (!json_handle(options["target"], handle)) {
+				return error("could not resolve the target");
+			}
+
+			request.targets.emplace_back(handle);
+		}
+
+		if (options.contains("targets")) {
+			if (!options["targets"].is_array()) {
+				return error("targets has to be an array");
+			}
+
+			for (const auto &target : options["targets"]) {
+				uint32_t handle = 0;
+				if (!json_handle(target, handle)) {
+					return error("could not resolve one of the targets");
+				}
+
+				request.targets.emplace_back(handle);
+			}
+		}
+
+		if (options.contains("sender") && !json_handle(options["sender"], request.sender)) {
+			return error("could not resolve the sender");
+		}
+
+		request.broadcast = options.value("broadcast", request.targets.empty());
+		request.exclude_targets = options.value("exclude", false);
+		request.radius = options.value("radius", 0.0f);
+		request.delay = options.value("delay", 0.0f);
+
+		if (options.contains("position")) {
+			const auto &position = options["position"];
+			if (!position.is_array() || position.size() != 3) {
+				return error("position has to be [x, y, z]");
+			}
+
+			for (size_t axis = 0; axis < 3; ++axis) {
+				if (!position[axis].is_number()) {
+					return error("position has to be [x, y, z]");
+				}
+
+				request.position[axis] = position[axis].get<float>();
+			}
+
+			request.has_position = true;
+		}
+
+		// the values are checked before anything is queued, so a typo does not send
+		// the event out with its defaults
+		std::vector<std::pair<std::string, ddl::Value>> writes;
+		if (options.contains("fields")) {
+			if (!options["fields"].is_object()) {
+				return error("fields has to be an object");
+			}
+
+			for (const auto &[path, value] : options["fields"].items()) {
+				ddl::Value converted {};
+				if (value.is_boolean()) {
+					converted.kind = ddl::ValueKind::Bool;
+					converted.as_bool = value.get<bool>();
+				} else if (value.is_number()) {
+					converted.kind = ddl::ValueKind::Real;
+					converted.as_real = value.get<double>();
+				} else {
+					return error("field " + path + " has to be a number or a bool");
+				}
+
+				if (!events::has_field(info, path.c_str())) {
+					return error(std::string(events::class_name(info)) + " has no field " + path);
+				}
+
+				writes.emplace_back(path, converted);
+			}
+		}
+
+		const char *reason = nullptr;
+		auto *event = events::queue(info, request, &reason);
+		if (event == nullptr) {
+			return error(reason != nullptr ? reason : "the event was not queued");
+		}
+
+		nlohmann::json::array_t failed;
+		for (const auto &[path, value] : writes) {
+			const char *why = nullptr;
+			if (!events::set_field(info, event, path.c_str(), value, &why)) {
+				failed.emplace_back(path + ": " + (why != nullptr ? why : "refused"));
+			}
+		}
+
+		char address[24];
+		_snprintf_s(address, sizeof(address), _TRUNCATE, "%016llx", reinterpret_cast<uintptr_t>(event));
+
+		nlohmann::json result;
+		result["class"] = events::class_name(info);
+		result["address"] = address;
+		result["targets"] = request.targets;
+		result["broadcast"] = request.broadcast;
+		if (!failed.empty()) {
+			result["failed_fields"] = failed;
+		}
+
+		return ok(result);
+	}
+
 	// runs on the engine thread, inside pump
 	static auto
 	execute(const std::string &line) -> std::string {
@@ -1052,6 +1306,12 @@ namespace rivet_hook::bridge {
 		constexpr std::string_view exec_prefix = "script.exec ";
 		if (line.starts_with(exec_prefix)) {
 			return cmd_script_exec(line.substr(exec_prefix.size()));
+		}
+
+		// the json options are the rest of the line, same reason
+		constexpr std::string_view send_prefix = "event.send ";
+		if (line.starts_with(send_prefix)) {
+			return cmd_event_send(line.substr(send_prefix.size()));
 		}
 
 		const auto args = split(line);
@@ -1121,6 +1381,30 @@ namespace rivet_hook::bridge {
 
 		if (command == "mem.read") {
 			return cmd_mem_read(args);
+		}
+
+		if (command == "event.status") {
+			return ok(events::status());
+		}
+
+		if (command == "event.classes") {
+			return cmd_event_classes(args);
+		}
+
+		if (command == "event.info") {
+			return cmd_event_info(args);
+		}
+
+		if (command == "event.tail") {
+			return cmd_event_tail(args);
+		}
+
+		if (command == "event.watch") {
+			return cmd_event_watch(args);
+		}
+
+		if (command == "event.captures") {
+			return cmd_event_captures(args);
 		}
 
 		if (command == "script.status") {
@@ -1244,7 +1528,7 @@ namespace rivet_hook::bridge {
 		if (args[0] == "help") {
 			nlohmann::json result;
 			result["commands"] = nlohmann::json::array_t {
-				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>"
+				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]"
 			};
 			return ok(result);
 		}

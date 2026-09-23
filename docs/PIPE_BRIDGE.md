@@ -49,6 +49,31 @@ python tools/rivetctl.py mem.watches
 python tools/rivetctl.py mem.watch off
 ```
 
+## Events
+
+`event.*` is the engine's event queue, the same one `rivet.queue_event` and
+`rivet.on_event` use (see [LUA_SCRIPTING.md](LUA_SCRIPTING.md#events)):
+
+```bash
+python tools/rivetctl.py event.status
+python tools/rivetctl.py event.classes Warp
+python tools/rivetctl.py event.info PerformWarpEvent
+python tools/rivetctl.py event.tail 50
+python tools/rivetctl.py event.tail Damage 20
+python tools/rivetctl.py event.watch PerformWarpEvent on
+python tools/rivetctl.py event.captures
+python tools/rivetctl.py event.send PerformWarpEvent '{"target": "hero", "fields": {"ResetCamera": true}}'
+```
+
+`event.tail` answers from the last 1024 events the hook saw, without their
+fields. `event.watch <class> on` also keeps the decoded fields of every event of
+that class, or a derived one, for `event.captures` to return (the last 128).
+
+`event.send` is the other command whose argument is not split on spaces: after
+the class name the rest of the line is a JSON object with the same keys as the
+Lua options table. A handle may be written as a number, as text in any base, or
+as `"hero"`.
+
 ## Wire format
 
 One connection, one client at a time. Each message, request or response, is a
@@ -60,7 +85,7 @@ One connection, one client at a time. Each message, request or response, is a
 
 A request payload is one command line, e.g. `mem.read 0x1234 64`. Arguments
 split on single spaces with no quoting, so an argument cannot itself contain a
-space (`script.exec` is the exception - see below).
+space (`script.exec` and `event.send` are the exceptions).
 
 A response payload is JSON:
 

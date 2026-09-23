@@ -97,6 +97,15 @@ namespace rivet_hook {
 	MAKE_SIGNATURE(LOAD_ACTOR_ASSET, "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 57 48 83 EC 30 49 8B F9 49 8B F0 48 8B DA")
 	MAKE_SIGNATURE(SWAPCHAIN_VTABLE, "48 8D 05 ?? ?? ?? ?? 48 89 01 66 C7 41 ?? 00 00 C6 41 ?? 00 48 83 C1 10")
 
+	// events. (event system, namehash, sender, targets, target count, exclude targets,
+	// position, locator hash, broadcast, radius, delay, ddl data, strings) -> event
+	MAKE_SIGNATURE(QUEUE_EVENT, "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 41 56 41 57 48 81 EC 80 00 00 00 48 8B E9 0F 29 74 24 70 48 81 C1 ?? ?? ?? ?? 4D 8B F9 41 8B D8")
+	// the frame allocation QueueEvent and one sibling make, both through the global
+	// event system. matches twice, both loading the same address
+	MAKE_SIGNATURE(EVENT_SYSTEM, "48 8B 7F 20 48 8D 0D ?? ?? ?? ?? 0F 57 C0 0F 2F F0 8B 57 14")
+
+	constexpr uint32_t EVENT_SYSTEM_ADDRESS = 0x7;
+
 	constexpr uint32_t HERO_SYSTEM_ADDRESS = 0x3;
 	constexpr uint32_t SCENE_MANAGER_ADDRESS = 0x3;
 	constexpr uint32_t ACTOR_ASSET_MANAGER_ADDRESS = 0x3;

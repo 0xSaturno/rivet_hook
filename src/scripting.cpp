@@ -23,6 +23,7 @@ extern "C" {
 #include "bridge.hpp"
 #include "ddl_inspector.hpp"
 #include "ddl_visit.hpp"
+#include "events.hpp"
 #include "game/scene_manager.hpp"
 #include "game_thread.hpp"
 #include "runtime.hpp"
@@ -82,6 +83,9 @@ namespace rivet_hook::scripting {
 	static int g_frame_count = 0;
 	static Callback g_key_callbacks[MAX_CALLBACKS];
 	static int g_key_count = 0;
+	// key is the event class id
+	static Callback g_event_callbacks[MAX_CALLBACKS];
+	static int g_event_count = 0;
 
 	// keys arrive on the input thread and are dispatched by the next pump
 	static std::mutex g_key_lock;
@@ -95,6 +99,7 @@ namespace rivet_hook::scripting {
 	static uint64_t g_frames = 0;
 	static uint64_t g_dispatched_frame = 0;
 	static uint64_t g_dispatched_key = 0;
+	static uint64_t g_dispatched_event = 0;
 	static uint64_t g_errors = 0;
 	static double g_last_ms = 0.0;
 	static double g_peak_ms = 0.0;
@@ -1050,6 +1055,289 @@ namespace rivet_hook::scripting {
 		return 1;
 	}
 
+	// ----------------------------------------------------------------- events --
+
+	constexpr int MAX_EVENT_TARGETS = 64;
+	constexpr int MAX_EVENT_FIELDS = 32;
+	constexpr int MAX_EVENT_DEPTH = 4;
+
+	// pushes a live DDL object as a table of its readable fields, nested structs as
+	// tables. dynamic arrays and maps are left out: rivet.event_dump has them.
+	static auto
+	push_object(lua_State *L, const DDLTypeInfo *type, const uint8_t *object, const int depth) -> void {
+		lua_newtable(L);
+		if (type == nullptr || object == nullptr || type->field_names == nullptr) {
+			return;
+		}
+
+		for (int32_t index = 0; index < type->field_count; ++index) {
+			char name[0x100];
+			if (!ddl::read_string(type->field_names[index], name, sizeof(name))) {
+				continue;
+			}
+
+			const auto field = ddl::field_at(type, index);
+			if (field.array_type != ddl::ArrayType::Scalar) {
+				continue;
+			}
+
+			if (field.type == ddl::FieldType::Struct) {
+				if (depth >= MAX_EVENT_DEPTH || type->field_type_ids == nullptr) {
+					continue;
+				}
+
+				const auto *nested = ddl::find_type(type->field_type_ids[index]);
+				const auto *at = object + type->field_offsets[index];
+				if (nested == nullptr || !ddl::is_readable(at, nested->allocation_size)) {
+					continue;
+				}
+
+				push_object(L, nested, at, depth + 1);
+				lua_setfield(L, -2, name);
+				continue;
+			}
+
+			// a string field pushes its text and its hash; the table keeps the text
+			const auto pushed = push_value(L, ddl::read_field(type, object, index));
+			if (pushed > 1) {
+				lua_pop(L, pushed - 1);
+			}
+
+			lua_setfield(L, -2, name);
+		}
+	}
+
+	// the table an rivet.on_event callback receives
+	static auto
+	push_event(lua_State *L, const EventEntry &entry) -> void {
+		const auto *info = events::class_at(entry.class_id);
+
+		lua_newtable(L);
+
+		lua_pushstring(L, events::class_name(info));
+		lua_setfield(L, -2, "class");
+
+		lua_pushinteger(L, events::sender_of(entry));
+		lua_setfield(L, -2, "sender");
+
+		lua_newtable(L);
+		const auto count = entry.target_count <= MAX_EVENT_TARGETS ? entry.target_count : 0;
+		if (count == 1 || (count > 1 && ddl::is_readable(entry.targets, sizeof(uint32_t) * count))) {
+			for (uint32_t i = 0; i < count; ++i) {
+				lua_pushinteger(L, entry.target(i));
+				lua_rawseti(L, -2, static_cast<lua_Integer>(i) + 1);
+			}
+		}
+
+		lua_setfield(L, -2, "targets");
+
+		lua_pushboolean(L, (entry.flags & EVENT_BROADCAST) != 0 ? 1 : 0);
+		lua_setfield(L, -2, "broadcast");
+
+		char address[24];
+		_snprintf_s(address, sizeof(address), _TRUNCATE, "%016llx", reinterpret_cast<uintptr_t>(entry.event));
+		lua_pushstring(L, address);
+		lua_setfield(L, -2, "address");
+
+		if (info != nullptr && ddl::is_readable(entry.event, info->type_info->allocation_size)) {
+			push_object(L, info->type_info, static_cast<const uint8_t *>(entry.event), 0);
+		} else {
+			lua_newtable(L);
+		}
+
+		lua_setfield(L, -2, "fields");
+	}
+
+	static auto
+	check_event_class(lua_State *L, const int arg) -> const EventClassInfo * {
+		const auto *name = luaL_checkstring(L, arg);
+		if (!events::ready()) {
+			luaL_error(L, "events are unavailable: %s", events::unavailable_reason());
+		}
+
+		const auto *info = events::find_class(name);
+		if (info == nullptr) {
+			luaL_error(L, "there is no event class called %s", name);
+		}
+
+		return info;
+	}
+
+	// rivet.on_event(name, fn): fn(ev) for every event of the class, or of a class
+	// derived from it, that goes through the main queue. "EventBase" sees them all.
+	static auto
+	l_on_event(lua_State *L) -> int {
+		const auto *info = check_event_class(L, 1);
+		add_callback(L, g_event_callbacks, g_event_count, info->id, 2);
+		return 0;
+	}
+
+	static auto
+	check_handle(lua_State *L, const int index, const char *what) -> uint32_t {
+		if (!lua_isinteger(L, index)) {
+			luaL_error(L, "%s has to be an actor handle", what);
+		}
+
+		return static_cast<uint32_t>(lua_tointeger(L, index));
+	}
+
+	// rivet.queue_event(name, {target, targets, sender, broadcast, exclude, radius,
+	// delay, position = {x, y, z}, fields = {["Destination.Position.X"] = 1}}).
+	// returns the address of the queued event as hex text.
+	static auto
+	l_queue_event(lua_State *L) -> int {
+		const auto *info = check_event_class(L, 1);
+
+		// everything is read into plain storage before the request is built: a
+		// raise from inside a std::vector's lifetime would skip its destructor
+		uint32_t targets[MAX_EVENT_TARGETS];
+		int target_count = 0;
+		uint32_t sender = 0;
+		bool broadcast = true;
+		bool broadcast_given = false;
+		bool exclude = false;
+		float radius = 0.0f;
+		float delay = 0.0f;
+		bool has_position = false;
+		float position[4] {};
+		const char *paths[MAX_EVENT_FIELDS];
+		ddl::Value values[MAX_EVENT_FIELDS];
+		int field_count = 0;
+
+		if (!lua_isnoneornil(L, 2)) {
+			luaL_checktype(L, 2, LUA_TTABLE);
+
+			if (lua_getfield(L, 2, "target") != LUA_TNIL) {
+				targets[target_count++] = check_handle(L, -1, "target");
+			}
+
+			lua_pop(L, 1);
+
+			if (lua_getfield(L, 2, "targets") != LUA_TNIL) {
+				luaL_checktype(L, -1, LUA_TTABLE);
+				const auto count = static_cast<int>(lua_rawlen(L, -1));
+				if (count + target_count > MAX_EVENT_TARGETS) {
+					luaL_error(L, "at most %d targets", MAX_EVENT_TARGETS);
+				}
+
+				for (auto i = 1; i <= count; ++i) {
+					lua_rawgeti(L, -1, i);
+					targets[target_count++] = check_handle(L, -1, "every target");
+					lua_pop(L, 1);
+				}
+			}
+
+			lua_pop(L, 1);
+
+			if (lua_getfield(L, 2, "sender") != LUA_TNIL) {
+				sender = check_handle(L, -1, "sender");
+			}
+
+			lua_pop(L, 1);
+
+			if (lua_getfield(L, 2, "broadcast") != LUA_TNIL) {
+				broadcast = lua_toboolean(L, -1) != 0;
+				broadcast_given = true;
+			}
+
+			lua_pop(L, 1);
+
+			lua_getfield(L, 2, "exclude");
+			exclude = lua_toboolean(L, -1) != 0;
+			lua_pop(L, 1);
+
+			if (lua_getfield(L, 2, "radius") != LUA_TNIL) {
+				radius = static_cast<float>(luaL_checknumber(L, -1));
+			}
+
+			lua_pop(L, 1);
+
+			if (lua_getfield(L, 2, "delay") != LUA_TNIL) {
+				delay = static_cast<float>(luaL_checknumber(L, -1));
+			}
+
+			lua_pop(L, 1);
+
+			if (lua_getfield(L, 2, "position") != LUA_TNIL) {
+				luaL_checktype(L, -1, LUA_TTABLE);
+				for (auto axis = 0; axis < 3; ++axis) {
+					lua_rawgeti(L, -1, axis + 1);
+					position[axis] = static_cast<float>(luaL_checknumber(L, -1));
+					lua_pop(L, 1);
+				}
+
+				has_position = true;
+			}
+
+			lua_pop(L, 1);
+
+			// the path strings stay alive: the fields table is left on the stack
+			// until the writes are done
+			if (lua_getfield(L, 2, "fields") != LUA_TNIL) {
+				luaL_checktype(L, -1, LUA_TTABLE);
+				lua_pushnil(L);
+				while (lua_next(L, -2) != 0) {
+					if (lua_type(L, -2) != LUA_TSTRING) {
+						luaL_error(L, "fields are keyed by name");
+					}
+
+					if (field_count >= MAX_EVENT_FIELDS) {
+						luaL_error(L, "at most %d fields", MAX_EVENT_FIELDS);
+					}
+
+					const auto *path = lua_tostring(L, -2);
+					if (!events::has_field(info, path)) {
+						luaL_error(L, "%s has no field %s", events::class_name(info), path);
+					}
+
+					if (!lua_isboolean(L, -1) && !lua_isnumber(L, -1)) {
+						luaL_error(L, "field %s has to be a number or a boolean", path);
+					}
+
+					paths[field_count] = path;
+					values[field_count] = check_value(L, -1);
+					++field_count;
+					lua_pop(L, 1);
+				}
+			}
+		}
+
+		if (!broadcast_given) {
+			broadcast = target_count == 0;
+		}
+
+		const char *reason = nullptr;
+		uint8_t *event = nullptr;
+		{
+			events::Request request;
+			request.sender = sender;
+			request.targets.assign(targets, targets + target_count);
+			request.broadcast = broadcast;
+			request.exclude_targets = exclude;
+			request.radius = radius;
+			request.delay = delay;
+			request.has_position = has_position;
+			memcpy(request.position, position, sizeof(position));
+			event = events::queue(info, request, &reason);
+		}
+
+		if (event == nullptr) {
+			luaL_error(L, "%s was not queued: %s", events::class_name(info), reason != nullptr ? reason : "unknown reason");
+		}
+
+		for (auto i = 0; i < field_count; ++i) {
+			const char *why = "the write was refused";
+			if (!events::set_field(info, event, paths[i], values[i], &why)) {
+				luaL_error(L, "%s was queued, but %s could not be set: %s", events::class_name(info), paths[i], why);
+			}
+		}
+
+		char address[24];
+		_snprintf_s(address, sizeof(address), _TRUNCATE, "%016llx", reinterpret_cast<uintptr_t>(event));
+		lua_pushstring(L, address);
+		return 1;
+	}
+
 	static const luaL_Reg g_api[] = {
 		{ "log", l_log },
 		{ "on_frame", l_on_frame },
@@ -1078,6 +1366,8 @@ namespace rivet_hook::scripting {
 		{ "detour", l_detour },
 		{ "dump", l_dump },
 		{ "ui_publish", l_ui_publish },
+		{ "on_event", l_on_event },
+		{ "queue_event", l_queue_event },
 		{ nullptr, nullptr },
 	};
 
@@ -1145,8 +1435,13 @@ namespace rivet_hook::scripting {
 			entry = {};
 		}
 
+		for (auto &entry : g_event_callbacks) {
+			entry = {};
+		}
+
 		g_frame_count = 0;
 		g_key_count = 0;
+		g_event_count = 0;
 		g_scripts.clear();
 	}
 
@@ -1279,6 +1574,24 @@ namespace rivet_hook::scripting {
 			}
 		}
 
+		// what events::poll picked up this pump. the entries stay valid until the
+		// next poll, and the events they point at live two frames
+		const auto event_count = g_event_count;
+		if (event_count > 0) {
+			for (const auto &entry : events::fresh()) {
+				for (auto index = 0; index < event_count; ++index) {
+					if (!events::is_type(entry.class_id, static_cast<uint16_t>(g_event_callbacks[index].key))) {
+						continue;
+					}
+
+					run_callback(g_event_callbacks[index], g_dispatched_event, [&entry](lua_State *L) {
+						push_event(L, entry);
+						return 1;
+					});
+				}
+			}
+		}
+
 		const auto frame_count = g_frame_count;
 		for (auto index = 0; index < frame_count; ++index) {
 			run_callback(g_frame_callbacks[index], g_dispatched_frame, [delta](lua_State *L) {
@@ -1363,6 +1676,7 @@ namespace rivet_hook::scripting {
 		result["frames_pumped"] = g_frames;
 		result["frame_callbacks_run"] = g_dispatched_frame;
 		result["key_callbacks_run"] = g_dispatched_key;
+		result["event_callbacks_run"] = g_dispatched_event;
 		result["keys_dropped"] = g_keys_dropped;
 		result["errors"] = g_errors;
 		result["last_ms"] = g_last_ms;
@@ -1384,6 +1698,14 @@ namespace rivet_hook::scripting {
 		result["scripts"] = scripts;
 		result["on_frame"] = describe_callbacks(g_frame_callbacks, g_frame_count);
 		result["on_key"] = describe_callbacks(g_key_callbacks, g_key_count);
+
+		auto on_event = describe_callbacks(g_event_callbacks, g_event_count);
+		for (auto index = 0; index < g_event_count; ++index) {
+			on_event[index].erase("key");
+			on_event[index]["class"] = events::class_name(events::class_at(static_cast<uint16_t>(g_event_callbacks[index].key)));
+		}
+
+		result["on_event"] = on_event;
 		return result;
 	}
 

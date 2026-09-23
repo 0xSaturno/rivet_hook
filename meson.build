@@ -123,6 +123,7 @@ if not get_option('loader_only')
         'src/ddl.cpp',
         'src/ddl_visit.cpp',
         'src/ddl_inspector.cpp',
+        'src/events.cpp',
         'src/game_thread.cpp',
         'src/scene_query.cpp',
         'src/watch.cpp',

@@ -705,14 +705,41 @@ namespace rivet_hook::ddl {
 		return region == nullptr ? 0 : region->end;
 	}
 
-	auto
-	is_readable(const void *ptr, const size_t size) -> bool {
+	// how many neighbouring regions a range may run across. VirtualQuery splits an
+	// image section wherever the page protection changes - a written copy on write
+	// page next to an untouched one, say - so a struct in .data can straddle two
+	// regions that are both perfectly readable. two event class type infos do.
+	constexpr int MAX_SPANNED_REGIONS = 8;
+
+	// true when every byte of [ptr, ptr + size) is in a committed readable region,
+	// and in a writable one too when writable is set
+	static auto
+	range_ok(const void *ptr, const size_t size, const bool writable) -> bool {
 		if (ptr == nullptr || size == 0) {
 			return false;
 		}
 
-		const auto region_end = readable_region_end(ptr);
-		return region_end != 0 && reinterpret_cast<uintptr_t>(ptr) + size <= region_end;
+		auto at = reinterpret_cast<uintptr_t>(ptr);
+		const auto end = at + size;
+		for (auto spanned = 0; spanned < MAX_SPANNED_REGIONS; ++spanned) {
+			const auto *region = region_of(reinterpret_cast<const void *>(at));
+			if (region == nullptr || (writable && !region->writable)) {
+				return false;
+			}
+
+			if (end <= region->end) {
+				return true;
+			}
+
+			at = region->end;
+		}
+
+		return false;
+	}
+
+	auto
+	is_readable(const void *ptr, const size_t size) -> bool {
+		return range_ok(ptr, size, false);
 	}
 
 	auto
@@ -721,17 +748,29 @@ namespace rivet_hook::ddl {
 			return false;
 		}
 
-		MEMORY_BASIC_INFORMATION mbi {};
-		if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT) {
-			return false;
-		}
-
 		constexpr DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-		if ((mbi.Protect & readable) == 0 || (mbi.Protect & PAGE_GUARD) != 0) {
-			return false;
+
+		auto at = reinterpret_cast<uintptr_t>(ptr);
+		const auto end = at + size;
+		for (auto spanned = 0; spanned < MAX_SPANNED_REGIONS; ++spanned) {
+			MEMORY_BASIC_INFORMATION mbi {};
+			if (VirtualQuery(reinterpret_cast<const void *>(at), &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT) {
+				return false;
+			}
+
+			if ((mbi.Protect & readable) == 0 || (mbi.Protect & PAGE_GUARD) != 0) {
+				return false;
+			}
+
+			const auto region_end = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+			if (end <= region_end) {
+				return true;
+			}
+
+			at = region_end;
 		}
 
-		return reinterpret_cast<uintptr_t>(ptr) + size <= reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+		return false;
 	}
 
 	auto
@@ -740,8 +779,7 @@ namespace rivet_hook::ddl {
 			return false;
 		}
 
-		const auto *region = region_of(ptr);
-		return region != nullptr && region->writable && reinterpret_cast<uintptr_t>(ptr) + size <= region->end;
+		return range_ok(ptr, size, true);
 	}
 
 	auto
@@ -945,6 +983,91 @@ namespace rivet_hook::ddl {
 
 		entry["value"] = elements;
 		entry.erase("undecoded");
+	}
+
+	auto
+	resolve_path(const DDLTypeInfo *&type_info, const uint8_t *&object, const char *path) -> int32_t {
+		if (type_info == nullptr || path == nullptr) {
+			return -1;
+		}
+
+		for (auto depth = 0; depth < MAX_STRUCT_DEPTH; ++depth) {
+			const auto *dot = strchr(path, '.');
+			char name[0x100];
+			const auto length = dot != nullptr ? static_cast<size_t>(dot - path) : strlen(path);
+			if (length == 0 || length >= sizeof(name)) {
+				return -1;
+			}
+
+			memcpy(name, path, length);
+			name[length] = '\0';
+
+			const auto index = find_field(type_info, name);
+			if (index < 0 || dot == nullptr) {
+				return index;
+			}
+
+			// only a single nested struct can be stepped into. arrays of them would
+			// need an element in the path, and nothing asks for that yet
+			const auto field = field_at(type_info, index);
+			if (field.type != FieldType::Struct || field.array_type != ArrayType::Scalar || type_info->field_type_ids == nullptr) {
+				return -1;
+			}
+
+			const auto *nested = find_type(type_info->field_type_ids[index]);
+			if (nested == nullptr) {
+				return -1;
+			}
+
+			if (object != nullptr) {
+				object += type_info->field_offsets[index];
+			}
+
+			type_info = nested;
+			path = dot + 1;
+		}
+
+		return -1;
+	}
+
+	auto
+	values_of(const DDLTypeInfo *type_info, const uint8_t *object, const int depth) -> nlohmann::json {
+		nlohmann::json out = nlohmann::json::object();
+		if (type_info == nullptr || object == nullptr || type_info->field_names == nullptr) {
+			return out;
+		}
+
+		for (int32_t index = 0; index < type_info->field_count; ++index) {
+			char name[0x100];
+			if (!read_string(type_info->field_names[index], name, sizeof(name))) {
+				continue;
+			}
+
+			const auto field = field_at(type_info, index);
+			const auto *at = object + type_info->field_offsets[index];
+
+			if (field.type == FieldType::Struct) {
+				if (depth >= MAX_STRUCT_DEPTH || field.array_type != ArrayType::Scalar || type_info->field_type_ids == nullptr) {
+					continue;
+				}
+
+				const auto *nested = find_type(type_info->field_type_ids[index]);
+				if (nested != nullptr && is_readable(at, nested->allocation_size)) {
+					out[name] = values_of(nested, at, depth + 1);
+				}
+
+				continue;
+			}
+
+			nlohmann::json decoded;
+			JsonVisitor visitor { decoded };
+			visit_field(visitor, object, type_info->field_offsets[index], field);
+			if (decoded.contains("default")) {
+				out[name] = decoded["default"];
+			}
+		}
+
+		return out;
 	}
 
 	auto

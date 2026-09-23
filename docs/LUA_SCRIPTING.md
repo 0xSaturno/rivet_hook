@@ -184,6 +184,65 @@ Slots are `first`, `first_results`, `middle`, `last`, `async`,
 over the bridge reports the call and skip counters for anything a script
 installed.
 
+### Events
+
+| | |
+|---|---|
+| `rivet.queue_event(name, options)` | queue an engine event; returns its address as hex text |
+| `rivet.on_event(name, fn)` | `fn(ev)` for every event of that class, or a class derived from it |
+
+Most cross-system verbs in the game are events: warps, damage, vanity overrides,
+time scale requests, ui sounds, cinematic triggers. `name` is the event class
+name (`"PerformWarpEvent"`) or its name hash as hex text (`"0x38008fe3"`); the
+hash is the class's DDL type id. `python tools/rivetctl.py event.classes Warp`
+lists what is registered and `event.info <name>` lists a class's fields.
+
+`options` is a table, every key optional:
+
+| key | |
+|---|---|
+| `target` / `targets` | one handle, or a list of up to 64 |
+| `sender` | handle the event claims to come from |
+| `broadcast` | defaults to `true` with no targets, `false` with them |
+| `exclude` | the targets are excluded instead of addressed |
+| `radius` | broadcast radius |
+| `delay` | seconds before it is delivered |
+| `position` | `{x, y, z}`; otherwise the engine uses the sender's position |
+| `fields` | `{ ["Destination.Position.X"] = 12.5, ResetCamera = true }` |
+
+The engine allocates the event, fills in its defaults and hands it back still
+unsent; `fields` are written into it then, before it is dispatched later in the
+frame. A path steps into nested structs with dots. Only numeric and boolean
+fields can be written, and every path is checked before anything is queued.
+
+```lua
+local hero = rivet.hero()
+rivet.queue_event("PerformWarpEvent", { target = hero, fields = {
+  ["Destination.Position.X"] = 10, ["Destination.Position.Y"] = 0,
+  ["Destination.Position.Z"] = 5, ResetCamera = true,
+} })
+
+rivet.on_event("PerformWarpEvent", function(ev)
+  rivet.log(ev.class, ev.sender, ev.fields.Destination.Position.X)
+end)
+```
+
+`ev` is `{ class, sender, targets, broadcast, address, fields }`, with `fields`
+decoded like `rivet.field` does, nested structs as tables. Dynamic arrays are
+left out of it; `event.watch` over the bridge records them.
+
+Callbacks see the events that go through the main event queue, picked up once
+per pump. Events queued from worker threads and delivered in the same frame
+never enter that queue and are not seen. `on_event("EventBase", fn)` sees
+everything else, which is a few hundred calls a frame: filter by class rather
+than doing that.
+
+Verified live on 2026-09-23: all 2197 classes read back, `event.tail` shows the
+game's own traffic, and a `PerformWarpEvent` sent to the hero moved them to the
+written `Destination.Position` (Y is up). Warps go exactly where they are told,
+off a ledge included. `python tools/rivetctl.py event.status` says whether the
+class table read back sane after a game patch.
+
 ### The game UI
 
 | | |

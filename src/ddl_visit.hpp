@@ -227,6 +227,18 @@ namespace rivet_hook::ddl {
 	auto
 	dump_object(const game::DDLTypeInfo *type_info, const uint8_t *object, int depth = 0) -> nlohmann::json;
 
+	// walks a dotted path such as "Destination.Position.X" through single nested
+	// struct fields. on success type_info and object are moved to the struct that
+	// owns the last name, and its index there is returned; -1 on any miss. object
+	// may be null to only check that the path exists.
+	auto
+	resolve_path(const game::DDLTypeInfo *&type_info, const uint8_t *&object, const char *path) -> int32_t;
+
+	// field name -> decoded value, with nested structs as objects. the compact
+	// counterpart to dump_object: no metadata, no raw bytes.
+	auto
+	values_of(const game::DDLTypeInfo *type_info, const uint8_t *object, int depth = 0) -> nlohmann::json;
+
 	// writes the "default" key the ddl dump emits for a field
 	struct JsonVisitor final : Visitor {
 		explicit JsonVisitor(nlohmann::json &field) : field_(field) { }

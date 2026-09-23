@@ -12,6 +12,7 @@
 
 #include "bridge.hpp"
 #include "ddl_visit.hpp"
+#include "events.hpp"
 #include "runtime.hpp"
 #include "scripting.hpp"
 #include "signature.hpp"
@@ -40,6 +41,8 @@ namespace rivet_hook::game_thread {
 
 	static auto
 	pump_all() -> void {
+		// events first, so the scripts see what was queued since the last pump
+		events::poll();
 		bridge::pump();
 		scripting::pump();
 	}
