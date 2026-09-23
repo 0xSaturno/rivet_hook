@@ -301,6 +301,31 @@ as forced get through either way.
 [`scripts/freecam.lua`](../scripts/freecam.lua) is a ready to use free camera
 on the numpad and the arrow keys.
 
+### HUD messages
+
+| | |
+|---|---|
+| `rivet.notify(text, [options])` | show `text` in one of the game's own HUD message slots |
+
+`options` is a table: `type` (default `"generic"`), `duration` in seconds
+(default 3, at most 60), and `sub` for a smaller second line.
+
+```lua
+rivet.notify("Freecam on")
+rivet.notify("Slow motion", { type = "center", duration = 2 })
+rivet.notify("Arena", { type = "planet", sub = "Wave 3" })
+```
+
+Only the `planet` and `tutorial` slots draw `sub`; the vanilla `hud.html` binds
+nothing but the message for the others, so their second line is dropped.
+
+The types are the game's own slots: `generic`, `center`, `pickup`,
+`location`, `planet`, `corner`, `tutorial`, `arena_wave` and `arena_reward`.
+Each slot shows one message at a time and a new one replaces it, including one
+the game itself put there. The text goes through the game's icon markup like
+any of its own messages. Nothing shows while HUD messages are turned off in the
+game's options, and `notify` raises saying so instead of failing silently.
+
 ### The game UI
 
 | | |

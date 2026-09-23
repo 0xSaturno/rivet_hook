@@ -126,6 +126,7 @@ if not get_option('loader_only')
         'src/ddl_inspector.cpp',
         'src/events.cpp',
         'src/game_thread.cpp',
+        'src/hud.cpp',
         'src/scene_query.cpp',
         'src/time_scale.cpp',
         'src/watch.cpp',

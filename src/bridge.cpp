@@ -20,6 +20,7 @@
 #include "events.hpp"
 #include "time_scale.hpp"
 #include "camera.hpp"
+#include "hud.hpp"
 #include "game/scene_manager.hpp"
 #include "game_thread.hpp"
 #include "scene_query.hpp"
@@ -1498,6 +1499,53 @@ namespace rivet_hook::bridge {
 		return ok(camera_state());
 	}
 
+	// hud.notify <text> | hud.message <type> <seconds> <text>. the text is the rest
+	// of the line, spaces and all
+	static auto
+	cmd_hud(const std::string &line) -> std::string {
+		auto type = hud::MessageType::Generic;
+		auto duration = 3.0f;
+		std::string text;
+
+		constexpr std::string_view notify_prefix = "hud.notify ";
+		if (line.starts_with(notify_prefix)) {
+			text = line.substr(notify_prefix.size());
+		} else {
+			const auto args = split(line);
+			if (args.size() < 4) {
+				return error("usage: hud.message <type> <seconds> <text>");
+			}
+
+			if (!hud::message_type(args[1].c_str(), type)) {
+				return error("no hud message type called " + args[1]);
+			}
+
+			try {
+				duration = std::stof(args[2]);
+			} catch (const std::exception &) {
+				return error("could not parse the duration");
+			}
+
+			// everything after the third word, as typed
+			size_t at = 0;
+			for (auto word = 0; word < 3; ++word) {
+				at = line.find_first_not_of(' ', at);
+				at = line.find(' ', at);
+			}
+
+			text = line.substr(line.find_first_not_of(' ', at));
+		}
+
+		const char *reason = nullptr;
+		if (!hud::notify(type, text.c_str(), duration, nullptr, &reason)) {
+			return error(reason != nullptr ? reason : "refused");
+		}
+
+		nlohmann::json result;
+		result["shown"] = text;
+		return ok(result);
+	}
+
 	// runs on the engine thread, inside pump
 	static auto
 	execute(const std::string &line) -> std::string {
@@ -1506,6 +1554,10 @@ namespace rivet_hook::bridge {
 		constexpr std::string_view exec_prefix = "script.exec ";
 		if (line.starts_with(exec_prefix)) {
 			return cmd_script_exec(line.substr(exec_prefix.size()));
+		}
+
+		if (line.starts_with("hud.notify ") || line.starts_with("hud.message ")) {
+			return cmd_hud(line);
 		}
 
 		// the json options are the rest of the line, same reason
@@ -1748,7 +1800,7 @@ namespace rivet_hook::bridge {
 		if (args[0] == "help") {
 			nlohmann::json result;
 			result["commands"] = nlohmann::json::array_t {
-				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]"
+				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]", "hud.notify <text>", "hud.message <type> <seconds> <text>"
 			};
 			return ok(result);
 		}

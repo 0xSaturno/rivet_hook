@@ -27,6 +27,7 @@ extern "C" {
 #include "events.hpp"
 #include "time_scale.hpp"
 #include "camera.hpp"
+#include "hud.hpp"
 #include "game/scene_manager.hpp"
 #include "game_thread.hpp"
 #include "runtime.hpp"
@@ -1542,6 +1543,52 @@ namespace rivet_hook::scripting {
 		return 1;
 	}
 
+	// ------------------------------------------------------------------- hud --
+
+	// rivet.notify(text, [options]): a message in one of the game's own hud slots.
+	// options: type ("generic" by default, or "center", "pickup", "location",
+	// "planet", "corner", "tutorial", "arena_wave", "arena_reward"), duration in
+	// seconds (3 by default), sub for a smaller second line.
+	static auto
+	l_notify(lua_State *L) -> int {
+		const auto *text = luaL_checkstring(L, 1);
+
+		auto type = hud::MessageType::Generic;
+		auto duration = 3.0f;
+		const char *sub = nullptr;
+
+		if (!lua_isnoneornil(L, 2)) {
+			luaL_checktype(L, 2, LUA_TTABLE);
+
+			if (lua_getfield(L, 2, "type") != LUA_TNIL) {
+				const auto *name = luaL_checkstring(L, -1);
+				if (!hud::message_type(name, type)) {
+					luaL_error(L, "there is no hud message type called %s", name);
+				}
+			}
+
+			lua_pop(L, 1);
+
+			if (lua_getfield(L, 2, "duration") != LUA_TNIL) {
+				duration = static_cast<float>(luaL_checknumber(L, -1));
+			}
+
+			lua_pop(L, 1);
+
+			// left on the stack so the string stays alive for the call
+			if (lua_getfield(L, 2, "sub") != LUA_TNIL) {
+				sub = luaL_checkstring(L, -1);
+			}
+		}
+
+		const char *reason = "the message was refused";
+		if (!hud::notify(type, text, duration, sub, &reason)) {
+			luaL_error(L, "%s", reason);
+		}
+
+		return 0;
+	}
+
 	static const luaL_Reg g_api[] = {
 		{ "log", l_log },
 		{ "on_frame", l_on_frame },
@@ -1581,6 +1628,7 @@ namespace rivet_hook::scripting {
 		{ "camera_detached", l_camera_detached },
 		{ "camera_set", l_camera_set },
 		{ "shake_block", l_shake_block },
+		{ "notify", l_notify },
 		{ nullptr, nullptr },
 	};
 

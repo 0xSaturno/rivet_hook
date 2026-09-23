@@ -127,6 +127,17 @@ namespace rivet_hook {
 
 	constexpr uint32_t CAMERA_SYSTEM_ADDRESS = 0x3;
 
+	// hud. (player hud, type, message, duration, sub message, prompt, pause tab, icon)
+	MAKE_SIGNATURE(HUD_SHOW_MESSAGE, "40 53 48 83 EC 50 0F 29 74 24 40 49 8B D8 0F 28 F3 E8 ?? ?? ?? ?? 48 85 C0 74 ?? 80 3D")
+	// the level script action that shows a hud message. it fetches the player hud
+	// through the getter it calls first
+	MAKE_SIGNATURE(HUD_MESSAGE_ACTION, "48 85 C9 0F 84 ?? ?? ?? ?? 53 48 81 EC 00 03 00 00 48 8B DA 48 89 BC 24 10 03 00 00 E8")
+
+	// the "messages enabled" option ShowMessage checks, a byte compared to zero
+	constexpr uint32_t HUD_SHOW_MESSAGE_ENABLED_ADDRESS = 0x1D;
+	constexpr uint32_t HUD_SHOW_MESSAGE_ENABLED_END = 0x22;
+	constexpr uint32_t HUD_MESSAGE_ACTION_GET_HUD = 0x1C;
+
 	constexpr uint32_t HERO_SYSTEM_ADDRESS = 0x3;
 	constexpr uint32_t SCENE_MANAGER_ADDRESS = 0x3;
 	constexpr uint32_t ACTOR_ASSET_MANAGER_ADDRESS = 0x3;

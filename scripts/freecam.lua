@@ -26,29 +26,36 @@ local function down(name)
   return rivet.is_key_down(rivet.key(name))
 end
 
+-- a short note on the hud as well as the log. pcall, because the hud refuses
+-- while messages are off in the options, and that should not stop the camera
+local function say(text)
+  rivet.log("freecam: " .. text)
+  pcall(rivet.notify, text, { type = "corner", duration = 1.5 })
+end
+
 rivet.on_key(rivet.key("NUMPAD0"), function()
   if rivet.camera_detached() then
     rivet.camera_attach()
-    rivet.log("freecam: attached")
+    say("Camera attached")
   else
     rivet.camera_detach()
-    rivet.log("freecam: detached")
+    say("Free camera")
   end
 end)
 
 rivet.on_key(rivet.key("DECIMAL"), function()
   local blocked = rivet.shake_block(not rivet.shake_block())
-  rivet.log("freecam: camera shake " .. (blocked and "off" or "on"))
+  say("Camera shake " .. (blocked and "off" or "on"))
 end)
 
 rivet.on_key(rivet.key("ADD"), function()
   speed = speed * 2
-  rivet.log("freecam: speed " .. speed)
+  say("Speed " .. speed)
 end)
 
 rivet.on_key(rivet.key("SUBTRACT"), function()
   speed = math.max(speed / 2, 0.25)
-  rivet.log("freecam: speed " .. speed)
+  say("Speed " .. speed)
 end)
 
 rivet.on_frame(function(dt)

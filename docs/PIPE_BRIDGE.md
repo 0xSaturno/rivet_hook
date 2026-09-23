@@ -99,6 +99,16 @@ applied scale and every channel asking for something other than 1.
 `camera.fov [scale]` reads or sets the field of view multiplier. See
 [LUA_SCRIPTING.md](LUA_SCRIPTING.md#time-and-camera).
 
+## HUD messages
+
+```bash
+python tools/rivetctl.py hud.notify Hello from the bridge
+python tools/rivetctl.py hud.message center 4 Slow motion on
+```
+
+The text is the rest of the line, spaces included. See
+[LUA_SCRIPTING.md](LUA_SCRIPTING.md#hud-messages) for the types.
+
 ## Wire format
 
 One connection, one client at a time. Each message, request or response, is a
@@ -110,7 +120,7 @@ One connection, one client at a time. Each message, request or response, is a
 
 A request payload is one command line, e.g. `mem.read 0x1234 64`. Arguments
 split on single spaces with no quoting, so an argument cannot itself contain a
-space (`script.exec` and `event.send` are the exceptions).
+space (`script.exec`, `event.send` and the `hud.*` text are the exceptions).
 
 A response payload is JSON:
 

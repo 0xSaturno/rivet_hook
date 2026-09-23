@@ -17,6 +17,7 @@
 #include "events.hpp"
 #include "time_scale.hpp"
 #include "camera.hpp"
+#include "hud.hpp"
 #include "overlay.hpp"
 #include "scripting.hpp"
 #endif
@@ -112,7 +113,9 @@ namespace rivet_hook {
 		}
 
 		const auto rip = reinterpret_cast<uint8_t*>(ptr) + rel_address + REL_ADDRESS_SIZE;
-		const auto target = *reinterpret_cast<uint32_t *>(ptr + rel_address);
+		// signed: a call or lea into lower addresses has a negative displacement,
+		// and read unsigned it lands 4 GiB past the target
+		const auto target = *reinterpret_cast<int32_t *>(ptr + rel_address);
 		return rip + target;
 	}
 
@@ -286,6 +289,7 @@ namespace rivet_hook {
 			events::init();
 			time_scale::init();
 			camera::init();
+			hud::init();
 			bridge::init();
 			scripting::init();
 			g_output << "[rivet] starting ddl thread\n";
