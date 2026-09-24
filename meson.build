@@ -135,6 +135,7 @@ if not get_option('loader_only')
         'src/watch.cpp',
         'src/overlay.cpp',
         'src/overlay_core.cpp',
+        'src/overlay_tabs.cpp',
         'src/scripting.cpp',
         'src/script_signal.cpp',
     ]

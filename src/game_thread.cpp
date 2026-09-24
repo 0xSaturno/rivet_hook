@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <vector>
 
 #include "game_thread.hpp"
 
@@ -41,11 +42,41 @@ namespace rivet_hook::game_thread {
 	static std::atomic_uint32_t g_game_thread_id = 0;
 	static std::atomic_uint32_t g_render_thread_id = 0;
 
+	// a stalled pump should not let the overlay pile up work
+	constexpr size_t MAX_JOBS = 64;
+
+	static std::mutex g_jobs_lock;
+	static std::vector<std::function<void()>> g_jobs;
+
+	static auto
+	run_jobs() -> void {
+		std::vector<std::function<void()>> jobs;
+		{
+			std::lock_guard guard { g_jobs_lock };
+			jobs.swap(g_jobs);
+		}
+
+		if (jobs.empty()) {
+			return;
+		}
+
+		ddl::reset_readable_cache();
+
+		// nothing may escape into the engine
+		for (auto &job : jobs) {
+			try {
+				job();
+			} catch (...) {
+			}
+		}
+	}
+
 	static auto
 	pump_all() -> void {
 		// events first, so the scripts see what was queued since the last pump
 		events::poll();
 		bridge::pump();
+		run_jobs();
 		scripting::pump();
 		camera::pump();
 		hero_look::pump();
@@ -102,6 +133,17 @@ namespace rivet_hook::game_thread {
 
 		pump_all();
 		++g_render_pumps;
+	}
+
+	auto
+	post(std::function<void()> job) -> bool {
+		std::lock_guard guard { g_jobs_lock };
+		if (g_jobs.size() >= MAX_JOBS) {
+			return false;
+		}
+
+		g_jobs.emplace_back(std::move(job));
+		return true;
 	}
 
 	auto

@@ -12,4 +12,4 @@ subprojects/*
 !subprojects/*.wrap
 !subprojects/*.wrap.license
 
-imgui.ini
+imgui.ini__pycache__/

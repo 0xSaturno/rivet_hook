@@ -451,10 +451,19 @@ namespace rivet_hook {
 		return game_present(pSwapChain, SyncInterval, flags);
 	}
 
+	static auto
+	is_keyboard_message(const UINT msg) -> bool {
+		return msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP || msg == WM_CHAR;
+	}
+
 	LRESULT APIENTRY
 	WndProc(HWND hWnd, const UINT msg, const WPARAM wParam, const LPARAM lParam) {
 		if (imgui_initialized && imgui_intercept_input) {
-			ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
+			// the keyboard reaches imgui from raw input instead, see feed_keyboard
+			if (!is_keyboard_message(msg)) {
+				ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
+			}
+
 			switch (msg) {
 				case WM_LBUTTONDBLCLK:
 				case WM_LBUTTONDOWN:
@@ -482,10 +491,76 @@ namespace rivet_hook {
 	using get_raw_input_data_t = UINT(WINAPI *)(HRAWINPUT hRawInput, UINT uiCommand, LPVOID pData, PUINT pcbSize, UINT cbSizeHeader);
 	get_raw_input_data_t game_get_raw_input_data = nullptr;
 
+	// the game takes its keyboard from raw input, and the window messages imgui
+	// types from (WM_CHAR above all) never come, so keys and characters are fed
+	// to imgui from here. the modifier state comes from GetAsyncKeyState, since
+	// the queue state GetKeyState reads is not kept up without those messages.
+	static auto
+	feed_keyboard(const RAWKEYBOARD &key) -> void {
+		const auto vk = key.VKey;
+		if (vk == 0 || vk >= 0xff) {
+			return;
+		}
+
+		const auto up = (key.Flags & RI_KEY_BREAK) != 0;
+		auto lparam = static_cast<LPARAM>(1) | (static_cast<LPARAM>(key.MakeCode & 0xff) << 16);
+		if ((key.Flags & RI_KEY_E0) != 0) {
+			lparam |= static_cast<LPARAM>(1) << 24;
+		}
+
+		if (up) {
+			lparam |= (static_cast<LPARAM>(1) << 30) | (static_cast<LPARAM>(1) << 31);
+		}
+
+		ImGui_ImplWin32_WndProcHandler(window_handle, up ? WM_KEYUP : WM_KEYDOWN, vk, lparam);
+
+		const auto down = [](const int key) {
+			return (GetAsyncKeyState(key) & 0x8000) != 0;
+		};
+
+		auto &io = ImGui::GetIO();
+		io.AddKeyEvent(ImGuiMod_Ctrl, down(VK_CONTROL));
+		io.AddKeyEvent(ImGuiMod_Shift, down(VK_SHIFT));
+		io.AddKeyEvent(ImGuiMod_Alt, down(VK_MENU));
+
+		if (up) {
+			return;
+		}
+
+		BYTE state[256] {};
+		for (const auto modifier : { VK_SHIFT, VK_CONTROL, VK_MENU }) {
+			if (down(modifier)) {
+				state[modifier] = 0x80;
+			}
+		}
+
+		if ((GetKeyState(VK_CAPITAL) & 1) != 0) {
+			state[VK_CAPITAL] = 1;
+		}
+
+		// ctrl alone is a shortcut, not text. ctrl with alt is altgr
+		if (state[VK_CONTROL] != 0 && state[VK_MENU] == 0) {
+			return;
+		}
+
+		// flag 4 leaves the keyboard's dead key state alone
+		wchar_t chars[8];
+		const auto count = ToUnicode(vk, key.MakeCode, state, chars, static_cast<int>(std::size(chars)), 4);
+		for (auto index = 0; index < count; ++index) {
+			if (chars[index] >= 0x20 && chars[index] != 0x7f) {
+				io.AddInputCharacterUTF16(chars[index]);
+			}
+		}
+	}
+
 	UINT WINAPI
 	get_raw_input_data(HRAWINPUT hRawInput, const UINT uiCommand, LPVOID pData, PUINT pcbSize, const UINT cbSizeHeader) {
 		const auto result = game_get_raw_input_data(hRawInput, uiCommand, pData, pcbSize, cbSizeHeader);
 		if (auto *raw = static_cast<RAWINPUT *>(pData); pData && imgui_initialized && raw->header.dwType != RIM_TYPEHID) {
+			if (result > 0 && uiCommand == RID_INPUT && raw->header.dwType == RIM_TYPEKEYBOARD && imgui_visible && imgui_intercept_input) {
+				feed_keyboard(raw->data.keyboard);
+			}
+
 			if (result > 0) {
 				if (raw->header.dwType == RIM_TYPEKEYBOARD &&
 					raw->data.keyboard.Flags & RI_KEY_BREAK) {
@@ -500,7 +575,7 @@ namespace rivet_hook {
 					} else if (raw->data.keyboard.VKey == g_settings.overlay.release_key && imgui_visible) {
 						imgui_intercept_input = !imgui_intercept_input;
 						ToggleCursor();
-					} else {
+					} else if (!(imgui_visible && imgui_intercept_input && ImGui::GetIO().WantTextInput)) {
 						Overlay::HandleKeyPress(raw->data.keyboard.VKey);
 					}
 

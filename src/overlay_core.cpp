@@ -4,27 +4,30 @@
 
 #include "imgui_internal.h"
 
+#include <array>
+#include <atomic>
 #include <cstdio>
-#include <thread>
+#include <cstdlib>
 #include <format>
-#include <mutex>
 
 #include <imgui.h>
 
 #include "ddl_inspector.hpp"
+#include "events.hpp"
+#include "game_thread.hpp"
 #include "game/hero_manager.hpp"
 #include "game/scene_manager.hpp"
 #include "overlay.hpp"
+#include "overlay_panel.hpp"
+#include "overlay_tabs.hpp"
 #include "runtime.hpp"
+#include "scene_query.hpp"
 #include "scripting.hpp"
 #include "signature.hpp"
 #include "signature_engine.hpp"
 
 namespace rivet_hook {
 	using namespace game;
-
-	std::thread g_SpawnThread;
-	HANDLE g_SpawnSignal;
 
 	HeroSystem *g_HeroManager = nullptr;
 	SceneManager *g_SceneManager = nullptr;
@@ -37,32 +40,36 @@ namespace rivet_hook {
 	LoadActorAsset_t game_LoadActorAsset = nullptr;
 
 	char debugSpawnActorPath[0x200];
-	Asset *debugSpawnActor = nullptr;
-	bool isSpawningDebugActor = false;
+	// written by the load on the game thread, polled by the overlay
+	std::atomic<Asset *> debugSpawnActor = nullptr;
 
-	auto
-	SpawnDebugActor() -> void {
-		while (true) {
-			if (FAILED(WaitForSingleObject(g_SpawnSignal, INFINITE))) {
-				break;
+	static overlay::Panel g_spawn;
+
+	// spawning adds components, which only the game thread may do
+	static auto
+	QueueSpawn() -> void {
+		overlay::act(g_spawn, [](std::string &message) {
+			if (!game_thread::on_game_thread()) {
+				message = "actors can only spawn on the game thread, and it is not pumping (loading?)";
+				return false;
 			}
 
-			{
-				if (debugSpawnActor == nullptr || debugSpawnActor->status != AssetStatus::Loaded || isSpawningDebugActor) {
-					continue;
-				}
-
-				isSpawningDebugActor = true;
-				game_SpawnBot(nullptr, debugSpawnActor);
-				isSpawningDebugActor = false;
+			auto *actor = debugSpawnActor.load();
+			if (actor == nullptr || actor->status != AssetStatus::Loaded) {
+				message = "the actor asset is not loaded";
+				return false;
 			}
-		}
+
+			game_SpawnBot(nullptr, actor);
+			message = "spawned";
+			return true;
+		});
 	}
 
 	auto
 	Overlay::HandleKeyPress(const int vk) -> void {
-		if (vk == g_settings.overlay.spawn_debug_actor_key) {
-			SetEvent(g_SpawnSignal);
+		if (vk == g_settings.overlay.spawn_debug_actor_key && game_SpawnBot != nullptr) {
+			QueueSpawn();
 		}
 
 		if (g_settings.scripts.enabled && vk == g_settings.scripts.reload_key) {
@@ -76,16 +83,21 @@ namespace rivet_hook {
 
 	static auto
 	DrawDebugSpawn() -> void {
-		const auto isDebugActorLoading = debugSpawnActor != nullptr && debugSpawnActor->status < AssetStatus::Loaded;
-		const auto isDebugActorInvalid = debugSpawnActor == nullptr || debugSpawnActor->status != AssetStatus::Loaded || isSpawningDebugActor;
-		const auto shouldHideInput = isDebugActorLoading || isSpawningDebugActor;
+		const auto *actor = debugSpawnActor.load();
+		const auto isDebugActorLoading = actor != nullptr && actor->status < AssetStatus::Loaded;
+		const auto isDebugActorInvalid = actor == nullptr || actor->status != AssetStatus::Loaded;
 
-		ImGui::LabelText("Actor Load Status", "%d", static_cast<int32_t>(debugSpawnActor ? debugSpawnActor->status : AssetStatus::Invalid));
-		ImGui::InputText("Actor Path", debugSpawnActorPath, sizeof(debugSpawnActorPath), shouldHideInput ? ImGuiInputTextFlags_ReadOnly : ImGuiInputTextFlags_None);
+		ImGui::LabelText("Actor Load Status", "%d", static_cast<int32_t>(actor ? actor->status : AssetStatus::Invalid));
+		ImGui::InputText("Actor Path", debugSpawnActorPath, sizeof(debugSpawnActorPath), isDebugActorLoading ? ImGuiInputTextFlags_ReadOnly : ImGuiInputTextFlags_None);
 
 		ImGui::BeginDisabled(isDebugActorLoading);
 		if (ImGui::Button("Load")) {
-			debugSpawnActor = game_LoadActorAsset(g_ActorAssetManager, debugSpawnActorPath, debugSpawnActor, nullptr);
+			overlay::act(g_spawn, [path = std::string(debugSpawnActorPath)](std::string &message) {
+				auto *loaded = game_LoadActorAsset(g_ActorAssetManager, path.c_str(), debugSpawnActor.load(), nullptr);
+				debugSpawnActor = loaded;
+				message = loaded != nullptr ? "loading " + path : "no actor asset at " + path;
+				return loaded != nullptr;
+			});
 		}
 		ImGui::EndDisabled();
 
@@ -93,9 +105,49 @@ namespace rivet_hook {
 
 		ImGui::BeginDisabled(isDebugActorInvalid);
 		if (ImGui::Button("Spawn")) {
-			SetEvent(g_SpawnSignal);
+			QueueSpawn();
 		}
 		ImGui::EndDisabled();
+
+		overlay::draw_message(g_spawn);
+	}
+
+	static overlay::Panel g_actor;
+
+	// warps the hero onto an actor, read where it is when the job runs
+	static auto
+	TeleportHeroTo(const uint32_t target) -> void {
+		overlay::act(g_actor, [target](std::string &message) {
+			const auto hero = scene_query::hero();
+			if (hero == 0) {
+				message = "there is no hero right now";
+				return false;
+			}
+
+			if (hero == target) {
+				message = "that is the hero";
+				return false;
+			}
+
+			const auto *actor = g_SceneManager->ResolveActor(EngineHandle { .value = target });
+			if (actor == nullptr || !actor->IsValid() || actor->object == nullptr) {
+				message = "the actor is gone";
+				return false;
+			}
+
+			float position[3];
+			memcpy(position, &actor->object->transform_matrix[3], sizeof(position));
+
+			const char *reason = nullptr;
+			if (!events::warp(hero, position, &reason)) {
+				message = "could not warp the hero: " + overlay::why(reason);
+				return false;
+			}
+
+			const char *name = actor->GetName();
+			message = std::format("warped the hero to {} at {:.1f} {:.1f} {:.1f}", name != nullptr && *name ? name : "the actor", position[0], position[1], position[2]);
+			return true;
+		});
 	}
 
 	static auto
@@ -135,17 +187,68 @@ namespace rivet_hook {
 			}
 
 			if (ImGui::Button("Update")) {
-				if (positionHandle == handle) {
-					memcpy(&actor->object->transform_matrix[3], savedPosition, sizeof(float) * 3);
-					positionHandle = INVALID_ENGINE_HANDLE;
-				}
+				const auto target = handle.value;
+				const auto move = positionHandle == handle;
+				const auto resize = scaleHandle == handle;
+				std::array<float, 3> position;
+				std::array<float, 3> scale;
+				memcpy(position.data(), savedPosition, sizeof(savedPosition));
+				memcpy(scale.data(), savedScale, sizeof(savedScale));
 
-				if (scaleHandle == handle) {
-					memcpy(&actor->object->scale, savedScale, sizeof(float) * 3);
-					scaleHandle = INVALID_ENGINE_HANDLE;
-				}
+				// the hero is warped the way the game warps it, which sticks. anything
+				// else gets its transform written, which the engine may stamp over
+				overlay::act(g_actor, [=](std::string &message) {
+					auto *live = g_SceneManager->ResolveActor(EngineHandle { .value = target });
+					if (live == nullptr || live->object == nullptr) {
+						message = "the actor is gone";
+						return false;
+					}
+
+					if (resize) {
+						memcpy(&live->object->scale, scale.data(), sizeof(float) * 3);
+						message = "scale written";
+					}
+
+					if (!move) {
+						return true;
+					}
+
+					if (target == scene_query::hero() && events::ready()) {
+						const char *reason = nullptr;
+						if (!events::warp(target, position.data(), &reason)) {
+							message = "could not warp the hero: " + overlay::why(reason);
+							return false;
+						}
+
+						message = "warped the hero";
+						return true;
+					}
+
+					memcpy(&live->object->transform_matrix[3], position.data(), sizeof(float) * 3);
+					message = "position written, the engine may stamp over it";
+					return true;
+				});
+
+				positionHandle = INVALID_ENGINE_HANDLE;
+				scaleHandle = INVALID_ENGINE_HANDLE;
 			}
+
+			overlay::draw_message(g_actor);
 		}
+
+		const auto hero = scene_query::hero();
+		ImGui::BeginDisabled(hero == 0 || hero == handle.value || actor->object == nullptr);
+		if (ImGui::Button("Teleport hero here")) {
+			TeleportHeroTo(handle.value);
+		}
+		ImGui::EndDisabled();
+
+		// the button sits outside the scene object block, so its outcome shows here too
+		if (actor->object == nullptr) {
+			overlay::draw_message(g_actor);
+		}
+
+		ImGui::SameLine();
 
 		static std::string lastDumpPath;
 		if (ImGui::Button("Dump JSON")) {
@@ -159,6 +262,8 @@ namespace rivet_hook {
 			ImGui::TextDisabled("%s", lastDumpPath.c_str());
 		}
 
+		ImGui::LabelText("Handle", "0x%08x", handle.value);
+		ImGui::LabelText("UID", "0x%016llx", scene_query::uid_of(actor));
 		ImGui::LabelText("Generation", "0x%04x", actor->generation);
 		ImGui::LabelText("Scene Index", "0x%08x", actor->sceneIndex);
 		ImGui::LabelText("Flags", "0x%08x", actor->flags);
@@ -229,11 +334,58 @@ namespace rivet_hook {
 		ImGui::EndChild();
 	}
 
+	// the actor a uid lookup found, for the next frame to select
+	static std::atomic_uint32_t g_foundActor = 0;
+	static overlay::Panel g_lookup;
+
+	static auto
+	DrawActorLookup(EngineHandle &actorHandle) -> void {
+		if (const auto found = g_foundActor.exchange(0); found != 0) {
+			actorHandle = EngineHandle { .value = found };
+		}
+
+		const auto hero = scene_query::hero();
+		ImGui::BeginDisabled(hero == 0);
+		if (ImGui::Button("Hero")) {
+			actorHandle = EngineHandle { .value = hero };
+		}
+		ImGui::EndDisabled();
+		ImGui::SetItemTooltip("select the actor the game treats as the player");
+
+		ImGui::SameLine();
+
+		static char uidText[0x20];
+		ImGui::SetNextItemWidth(200);
+		const auto entered = ImGui::InputTextWithHint("##uid", "uid", uidText, sizeof(uidText), ImGuiInputTextFlags_EnterReturnsTrue);
+		ImGui::SameLine();
+		if (ImGui::Button("Find UID") || entered) {
+			const auto uid = strtoull(uidText, nullptr, 0);
+			overlay::act(g_lookup, [uid](std::string &message) {
+				const auto found = scene_query::actor_by_uid(uid);
+				if (found == 0) {
+					message = std::format("no live actor has uid 0x{:016x}", uid);
+					return false;
+				}
+
+				g_foundActor = found;
+				message = std::format("uid 0x{:016x} is actor 0x{:08x}", uid, found);
+				return true;
+			});
+		}
+
+		ImGui::SetItemTooltip("hex with 0x, or decimal");
+
+		ImGui::SameLine();
+		overlay::draw_message(g_lookup);
+	}
+
 	static auto
 	DrawActorGroups() -> void {
 		static auto selectedIndex = -1;
 		static auto actorHandle = INVALID_ENGINE_HANDLE;
 		char labelSwap[0x100];
+
+		DrawActorLookup(actorHandle);
 
 		if (ImGui::BeginChild("actor_groups_left", ImVec2(150, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX)) {
 			for (auto index = 0; index < g_SceneManager->actorGroupMax; index++) {
@@ -272,6 +424,15 @@ namespace rivet_hook {
 						if (ImGui::Selectable(name, actorHandle == handle)) {
 							actorHandle = handle;
 						}
+
+						if (ImGui::BeginPopupContextItem("actor_menu")) {
+							if (ImGui::MenuItem("Teleport hero here", nullptr, false, handle.value != scene_query::hero())) {
+								TeleportHeroTo(handle.value);
+								actorHandle = handle;
+							}
+
+							ImGui::EndPopup();
+						}
 						ImGui::PopID();
 					}
 				}
@@ -289,11 +450,6 @@ namespace rivet_hook {
 	}
 
 	static auto
-	DrawHeroSystem() -> void {
-
-	}
-
-	static auto
 	CheckSpawnBot() -> bool {
 		return g_ActorAssetManager != nullptr && game_SpawnBot != nullptr && game_LoadActorAsset != nullptr;
 	}
@@ -303,17 +459,18 @@ namespace rivet_hook {
 		return g_SceneManager != nullptr && g_SceneManager->actorGroups != nullptr && g_SceneManager->actorGroupMax > 0;
 	}
 
-	static auto
-	CheckHeroSystem() -> bool {
-		return g_SceneManager != nullptr && g_SceneManager->actors != nullptr && g_HeroManager != nullptr && false;
-	}
-
 	using RivetImGuiCallback = void(*)();
 	using RivetImGuiCheckCallback = bool(*)();
-	static std::array<std::tuple<RivetImGuiCallback, RivetImGuiCheckCallback, const char*>, 3> tabs {{
+	static std::array<std::tuple<RivetImGuiCallback, RivetImGuiCheckCallback, const char*>, 9> tabs {{
+		{ DrawActorGroups, CheckActorGroups, "World" },
 		{ DrawDebugSpawn, CheckSpawnBot, "Spawn Actor" },
-		{ DrawActorGroups, CheckActorGroups, "Actor Groups" },
-		{ DrawHeroSystem, CheckHeroSystem, "Hero System" },
+		{ overlay::DrawHero, nullptr, "Hero" },
+		{ overlay::DrawCameraTime, nullptr, "Camera & Time" },
+		{ overlay::DrawHud, nullptr, "HUD" },
+		{ overlay::DrawEvents, nullptr, "Events" },
+		{ overlay::DrawConfigs, nullptr, "Configs" },
+		{ overlay::DrawScripts, nullptr, "Scripts" },
+		{ overlay::DrawStatus, nullptr, "Status" },
 	}};
 
 	auto
@@ -345,8 +502,6 @@ namespace rivet_hook {
 		}
 
 		memset(debugSpawnActorPath, 0, sizeof(debugSpawnActorPath));
-		g_SpawnSignal = CreateEvent(nullptr, false, false, "Rivet Debug Spawn Signal");
-		g_SpawnThread = std::thread(SpawnDebugActor);
 
 		g_HeroManager = static_cast<HeroSystem *>(load_rel_var(find_address(HERO_SYSTEM_SIGNATURE), HERO_SYSTEM_ADDRESS));
 		g_SceneManager = static_cast<SceneManager *>(load_rel_var(find_address(SCENE_MANAGER_SIGNATURE), SCENE_MANAGER_ADDRESS));
@@ -360,10 +515,5 @@ namespace rivet_hook {
 
 	auto
 	Overlay::Fini() -> void {
-		if (!g_settings.overlay.enabled) {
-			return;
-		}
-
-		CloseHandle(g_SpawnSignal);
 	}
 } // namespace rivet_hook

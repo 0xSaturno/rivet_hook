@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 
 #include <nlohmann/json.hpp>
 
@@ -26,6 +27,13 @@ namespace rivet_hook::game_thread {
 	// components has to refuse to run there.
 	auto
 	on_game_thread() -> bool;
+
+	// runs job on the next pump: the game thread, unless actor updates have stopped
+	// and present is standing in. for the overlay, which draws on the render thread
+	// and has to hand anything that touches the engine over. false when the queue is
+	// full and the job was dropped. safe from any thread.
+	auto
+	post(std::function<void()> job) -> bool;
 
 	// which thread each pump ran on and how recently, for the bridge's ping
 	auto
