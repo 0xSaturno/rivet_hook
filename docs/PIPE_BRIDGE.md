@@ -126,10 +126,12 @@ python tools/rivetctl.py hero.look characters/hero/hero_Kit/hero_kit.actor anims
 python tools/rivetctl.py hero.look characters/mymod/my_rivet.model
 python tools/rivetctl.py hero.look
 python tools/rivetctl.py hero.restore
+python tools/rivetctl.py hero.models [filter]
 ```
 
 `hero.look <.actor or .model> [anims]` is `rivet.hero_look`, `anims` putting on the asset's anim sets too; with no path it reports what is
-worn and what is still loading. `hero.restore` puts the hero's own look back.
+worn and what is still loading. `hero.restore` puts the hero's own look back. `hero.models [filter]` lists the
+`.model` files the mod paths provide and the game's own whole bodies.
 See [LUA_SCRIPTING.md](LUA_SCRIPTING.md#hero-model).
 
 ## Configs

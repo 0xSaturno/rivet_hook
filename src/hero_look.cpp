@@ -5,6 +5,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <string>
 
@@ -1027,6 +1029,53 @@ namespace rivet_hook::hero_look {
 		result["anim_sets_pushed"] = g_pushed_count;
 		result["models_held"] = (g_held_model != nullptr ? 1 : 0) + g_retired_count;
 		result["last_error"] = g_last_error.empty() ? nlohmann::json() : nlohmann::json(g_last_error);
+		return result;
+	}
+	// whole bodies of the game's own on the gameplay skeleton
+	struct GameModel {
+		const char *path;
+		const char *name;
+	};
+
+	constexpr GameModel GAME_MODELS[] = {
+		{ "characters/hero/hero_rivet/hero_rivet.model", "Rivet" },
+		{ "characters/hero/hero_rivet/hero_rivet_beginning.model", "Rivet (beginning)" },
+		{ "characters/hero/hero_rivet/hero_rivet_flashback.model", "Rivet (flashback)" },
+		{ "characters/hero/hero_ratchet/hero_ratchet.model", "Ratchet" },
+	};
+
+	static auto
+	contains(const std::string_view text, const std::string_view part) -> bool {
+		if (part.empty()) {
+			return true;
+		}
+
+		const auto found = std::ranges::search(text, part, [](const char a, const char b) {
+			return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+		});
+		return !found.empty();
+	}
+
+	auto
+	models(const char *filter) -> nlohmann::json {
+		const std::string_view part = filter != nullptr ? filter : "";
+		auto mods = nlohmann::json::array();
+		for (const auto &[path, mod] : AssetLoader::mod_models()) {
+			if (contains(path, part) || contains(mod, part)) {
+				mods.push_back({ { "path", path }, { "mod", mod } });
+			}
+		}
+
+		auto game = nlohmann::json::array();
+		for (const auto &[path, name] : GAME_MODELS) {
+			if (contains(path, part) || contains(name, part)) {
+				game.push_back({ { "path", path }, { "name", name } });
+			}
+		}
+
+		nlohmann::json result;
+		result["mods"] = std::move(mods);
+		result["game"] = std::move(game);
 		return result;
 	}
 } // namespace rivet_hook::hero_look

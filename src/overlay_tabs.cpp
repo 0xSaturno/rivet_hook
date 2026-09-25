@@ -98,15 +98,19 @@ namespace rivet_hook::overlay {
 
 		static std::string lookPath;
 		static auto anims = false;
-		ImGui::InputTextWithHint("Actor asset", "actor asset path", &lookPath);
-		ImGui::Checkbox("Anim sets", &anims);
-		ImGui::SetItemTooltip("also puts the asset's anim sets on top of the hero's");
+		ImGui::InputTextWithHint("Asset", ".actor or .model path", &lookPath);
 
-		ImGui::BeginDisabled(lookPath.empty());
-		if (ImGui::Button("Apply")) {
-			act(g_hero, [path = lookPath, anims = anims](std::string &message) {
+		// a .model has no anim sets of its own
+		const auto is_model = lookPath.size() > 6 && _stricmp(lookPath.c_str() + lookPath.size() - 6, ".model") == 0;
+		ImGui::BeginDisabled(is_model);
+		ImGui::Checkbox("Anim sets", &anims);
+		ImGui::EndDisabled();
+		ImGui::SetItemTooltip(is_model ? "a .model has no anim sets of its own, its .actor has them" : "also puts the actor asset's anim sets on top of the hero's");
+
+		const auto wear = [](const std::string &path, const bool with_anims) {
+			act(g_hero, [path, with_anims](std::string &message) {
 				const char *reason = nullptr;
-				switch (hero_look::request(path.c_str(), anims, &reason)) {
+				switch (hero_look::request(path.c_str(), with_anims, &reason)) {
 					case hero_look::Result::Applied:
 						message = "wearing " + path;
 						return true;
@@ -118,6 +122,11 @@ namespace rivet_hook::overlay {
 						return false;
 				}
 			});
+		};
+
+		ImGui::BeginDisabled(lookPath.empty());
+		if (ImGui::Button("Apply")) {
+			wear(lookPath, anims && !is_model);
 		}
 		ImGui::EndDisabled();
 
@@ -151,12 +160,82 @@ namespace rivet_hook::overlay {
 			}
 
 			ImGui::LabelText("Anim sets pushed", "%d", get<int>(look, "anim_sets_pushed", 0));
+			ImGui::LabelText("Models held", "%d", get<int>(look, "models_held", 0));
 			if (const auto error = get<std::string>(look, "last_error", ""); !error.empty()) {
 				ImGui::LabelText("Last error", "%s", error.c_str());
 			}
 		}
 
 		draw_message(g_hero);
+
+		// the list never changes after startup, so it is read here on the render
+		// thread and only rebuilt when the filter does
+		if (ImGui::CollapsingHeader("Browse models")) {
+			static std::string filter;
+			static std::string listedFilter = "\x01";
+			static nlohmann::json listing;
+			ImGui::InputTextWithHint("Filter", "path, mod or name", &filter);
+			if (filter != listedFilter) {
+				listing = hero_look::models(filter.c_str());
+				listedFilter = filter;
+			}
+
+			const auto height = ImGui::GetTextLineHeightWithSpacing() * 12.0f;
+			if (ImGui::BeginChild("hero_models", ImVec2(0, height), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeY)) {
+				const auto entry = [&](const std::string &path, const std::string &label, const int id) {
+					ImGui::PushID(id);
+					if (ImGui::Selectable(label.c_str(), lookPath == path)) {
+						lookPath = path;
+						wear(path, false);
+					}
+
+					ImGui::SetItemTooltip("%s", path.c_str());
+					ImGui::PopID();
+				};
+
+				auto id = 0;
+				ImGui::SeparatorText("Game");
+				for (const auto &model : listing["game"]) {
+					entry(model["path"].get<std::string>(), model["name"].get<std::string>(), id++);
+				}
+
+				ImGui::SeparatorText("Mods");
+				if (listing["mods"].empty()) {
+					ImGui::TextDisabled("no .model in any mod path");
+				}
+
+				// grouped by the mod path each came from, in load order
+				std::string mod;
+				auto open = false;
+				auto first = true;
+				for (const auto &model : listing["mods"]) {
+					if (const auto &from = model["mod"].get_ref<const std::string &>(); first || from != mod) {
+						first = false;
+						if (open) {
+							ImGui::TreePop();
+						}
+
+						mod = from;
+						open = ImGui::TreeNodeEx(mod.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+					}
+
+					if (open) {
+						const auto &path = model["path"].get_ref<const std::string &>();
+						const auto slash = path.find_last_of('/');
+						entry(path, slash == std::string::npos ? path : path.substr(slash + 1), id);
+					}
+
+					++id;
+				}
+
+				if (open) {
+					ImGui::TreePop();
+				}
+			}
+
+			ImGui::EndChild();
+			ImGui::TextDisabled("click to wear; hover for the full path");
+		}
 
 		ImGui::SeparatorText("Outfit");
 

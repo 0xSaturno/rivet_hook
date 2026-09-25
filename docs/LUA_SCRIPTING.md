@@ -355,6 +355,7 @@ up without checking it exists, so ownership is checked first.
 |---|---|
 | `rivet.hero_look(path, [anims])` | the hero wears the model of that `.actor`, or that `.model` itself; `"applied"`, or `"loading"` while the asset loads. `anims` also puts on the asset's anim sets |
 | `rivet.hero_look()` | the hero's own model and outfit back; `"restored"` |
+| `rivet.hero_models([filter])` | the looks there are: `{ mods = { { path, mod } }, game = { { path, name } } }` |
 
 ```lua
 rivet.hero_look("characters/hero/hero_Kit/hero_kit.actor")
@@ -366,6 +367,12 @@ no game file uses, and any number can be worn one after another in a session:
 each one is let go when the next look or the restore replaces it. It animates
 properly when it is rigged to Rivet's skeleton; a `.model` has no anim sets of
 its own, so `anims` only applies to `.actor` paths.
+
+`hero_models` lists every `.model` the mod paths in `rivet.toml` provide, with the
+path entry each came from (a later mod replacing the same file wins), and the
+game's own whole bodies on the gameplay skeleton. `filter` narrows both to paths,
+mods or names containing it, in any case. The mod list is read once at startup,
+like the mods themselves.
 
 Only the look changes. Rivet keeps her moves, abilities, voice and weapons: the
 hook makes the same model switch the game's own hero transformation makes and

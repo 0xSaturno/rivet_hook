@@ -1682,6 +1682,50 @@ namespace rivet_hook::scripting {
 		return 1;
 	}
 
+	// rivet.hero_models([filter]) -> { mods = { { path, mod }, ... },
+	// game = { { path, name }, ... } }: the .model looks the mod paths provide and
+	// the game's own whole bodies, narrowed to those containing filter
+	static auto
+	l_hero_models(lua_State *L) -> int {
+		// copied out of the json before anything below can raise
+		struct Entry {
+			std::string path;
+			std::string label;
+		};
+
+		std::vector<Entry> mods;
+		std::vector<Entry> game;
+		{
+			const auto listing = hero_look::models(luaL_optstring(L, 1, ""));
+			for (const auto &model : listing["mods"]) {
+				mods.push_back({ model["path"].get<std::string>(), model["mod"].get<std::string>() });
+			}
+
+			for (const auto &model : listing["game"]) {
+				game.push_back({ model["path"].get<std::string>(), model["name"].get<std::string>() });
+			}
+		}
+
+		const auto push_list = [L](const std::vector<Entry> &entries, const char *label_key) {
+			lua_createtable(L, static_cast<int>(entries.size()), 0);
+			for (size_t index = 0; index < entries.size(); ++index) {
+				lua_createtable(L, 0, 2);
+				lua_pushstring(L, entries[index].path.c_str());
+				lua_setfield(L, -2, "path");
+				lua_pushstring(L, entries[index].label.c_str());
+				lua_setfield(L, -2, label_key);
+				lua_rawseti(L, -2, static_cast<lua_Integer>(index + 1));
+			}
+		};
+
+		lua_createtable(L, 0, 2);
+		push_list(mods, "mod");
+		lua_setfield(L, -2, "mods");
+		push_list(game, "name");
+		lua_setfield(L, -2, "game");
+		return 1;
+	}
+
 	// --------------------------------------------------------------- configs --
 
 	// the config named by arg: an asset path or 16 hex digits, loaded right now
@@ -1892,6 +1936,7 @@ namespace rivet_hook::scripting {
 		{ "vanity_equip", l_vanity_equip },
 		{ "vanity_owns", l_vanity_owns },
 		{ "hero_look", l_hero_look },
+		{ "hero_models", l_hero_models },
 		{ "configs", l_configs },
 		{ "config", l_config },
 		{ "config_set", l_config_set },

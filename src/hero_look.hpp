@@ -44,4 +44,9 @@ namespace rivet_hook::hero_look {
 	// what is worn, what is pending, and whether the calls resolved
 	auto
 	status() -> nlohmann::json;
+
+	// the looks there are to wear: { mods: [{ path, mod }], game: [{ path, name }] },
+	// each list narrowed to paths containing filter (any case)
+	auto
+	models(const char *filter) -> nlohmann::json;
 } // namespace rivet_hook::hero_look

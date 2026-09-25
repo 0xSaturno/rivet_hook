@@ -6,6 +6,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace rivet_hook {
 	struct AssetLoader {
@@ -33,6 +35,18 @@ namespace rivet_hook {
 		// function. false when that function was not found.
 		static auto
 		asset_id(const char *path, uint64_t &out) -> bool;
+
+		// a .model some mod path provides, by its game path, and the assets.paths
+		// entry it came from. a later mod replacing the same path wins.
+		struct ModModel {
+			std::string path;
+			std::string mod;
+		};
+
+		// every .model the mod paths provide. filled once while mods load at
+		// startup and never changed after, so it can be read from any thread.
+		static auto
+		mod_models() -> const std::vector<ModModel> &;
 
 		constexpr static int ui_slot_count = 8;
 		constexpr static size_t ui_slot_size = 1024;

@@ -292,6 +292,23 @@ namespace rivet_hook {
 		return static_cast<AssetType>(it != rivet_exts.end() ? std::distance(rivet_exts.begin(), it) : 0);
 	}
 
+	// the .model files the mod paths provide, and the mod path being loaded now
+	std::vector<AssetLoader::ModModel> mod_models_found;
+	std::string loading_mod;
+
+	auto
+	note_mod_model(const std::string &game_path) -> void {
+		constexpr std::string_view extension = ".model";
+		if (game_path.size() <= extension.size() || _stricmp(game_path.c_str() + game_path.size() - extension.size(), extension.data()) != 0) {
+			return;
+		}
+
+		auto path = game_path;
+		std::ranges::replace(path, '\\', '/');
+		std::erase_if(mod_models_found, [&path](const AssetLoader::ModModel &model) { return _stricmp(model.path.c_str(), path.c_str()) == 0; });
+		mod_models_found.push_back({ std::move(path), loading_mod });
+	}
+
 	auto
 	populate_mod_asset(const std::filesystem::path &path, const std::string &game_path, AssetId asset_id, AssetType type, AssetLanguage lang, const uint8_t *buffer = nullptr, const size_t size = 0)
 		-> void {
@@ -325,7 +342,10 @@ namespace rivet_hook {
 			g_output << "[loader] " << path << " failed to init\n";
 			created.close();
 			mod_list.erase(asset_id);
+			return;
 		}
+
+		note_mod_model(game_path);
 	}
 
 	auto
@@ -627,6 +647,7 @@ namespace rivet_hook {
 		const auto cwd = std::filesystem::current_path();
 
 		for (const auto &entry : g_settings.assets.paths) {
+			loading_mod = entry;
 			auto path = std::filesystem::path(entry);
 
 			if (!path.is_absolute()) {
@@ -1004,6 +1025,11 @@ namespace rivet_hook {
 		game_create_asset_id(&id, path);
 		out = id;
 		return true;
+	}
+
+	auto
+	AssetLoader::mod_models() -> const std::vector<ModModel> & {
+		return mod_models_found;
 	}
 
 	auto
