@@ -25,9 +25,10 @@ namespace rivet_hook::hero_look {
 		Loading,
 	};
 
-	// puts the model of the actor asset at path on the hero, loading the asset
-	// first when it is not loaded. with anims, the asset's anim sets go on top of
-	// the hero's once the model has switched. game thread only.
+	// puts the model of the .actor at path, or the .model at path, on the hero,
+	// loading it first when it is not loaded. with anims (actor assets only), the
+	// asset's anim sets go on top of the hero's once the model has switched. game
+	// thread only.
 	auto
 	request(const char *path, bool anims, const char **reason) -> Result;
 

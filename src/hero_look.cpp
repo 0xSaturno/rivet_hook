@@ -14,6 +14,7 @@
 #include "game/scene_manager.hpp"
 #include "game_thread.hpp"
 #include "runtime.hpp"
+#include "runtime_loader.hpp"
 #include "scene_query.hpp"
 #include "signature.hpp"
 
@@ -64,6 +65,15 @@ namespace rivet_hook::hero_look {
 	constexpr size_t TYPE_INFO_DESTROY = 0xE0;
 	constexpr int32_t MAX_ANIM_SETS = 64;
 
+	using load_model_t = Asset *(*)(void *manager, const uint64_t *id, const void *loaded_from, const char *load_info);
+	using release_asset_t = bool (*)(void *manager, Asset *asset);
+
+	// AssetManagerBase: the asset handed out when a load cannot be made, for the
+	// model manager the default cube
+	constexpr size_t ASSET_MANAGER_DEFAULT_ASSET = 0x88;
+	// models switched away from whose switch has not landed yet
+	constexpr int32_t MAX_RETIRED_MODELS = 8;
+
 	static load_actor_asset_t g_load_actor_asset = nullptr;
 	static lookup_actor_asset_t g_lookup_actor_asset = nullptr;
 	static create_scene_object_t g_create_scene_object = nullptr;
@@ -86,6 +96,18 @@ namespace rivet_hook::hero_look {
 	static remove_anim_set_t g_remove_anim_set = nullptr;
 	static push_anim_set_t g_push_anim_set = nullptr;
 	static bool g_anims_ready = false;
+
+	static void *g_model_manager = nullptr;
+	static load_model_t g_load_model = nullptr;
+	static release_asset_t g_release_asset = nullptr;
+	static bool g_models_ready = false;
+
+	// a .model look holds one reference to its model while it is worn, and lets it
+	// go once the switch away from it has landed
+	static Asset *g_held_model = nullptr;
+	static Asset *g_retired_models[MAX_RETIRED_MODELS];
+	static int32_t g_retired_count = 0;
+	static bool g_pending_is_model = false;
 
 	// HeroSkinManagerPrius as OnTransformationPostActivate builds it on its stack
 	struct SkinPrius {
@@ -173,6 +195,17 @@ namespace rivet_hook::hero_look {
 				&& g_anim_set_at != nullptr && g_remove_anim_set != nullptr && g_push_anim_set != nullptr;
 		}
 
+		if (const auto load_site = find_address(MODEL_MANAGER_LOAD_SIGNATURE); load_site != 0) {
+			g_model_manager = load_rel_var(load_site, MODEL_MANAGER_ADDRESS);
+			g_load_model = reinterpret_cast<load_model_t>(load_rel_var(load_site, MODEL_MANAGER_LOAD_ADDRESS));
+		}
+
+		g_release_asset = reinterpret_cast<release_asset_t>(find_address(ASSET_MANAGER_RELEASE_SIGNATURE));
+		g_models_ready = g_model_manager != nullptr && g_load_model != nullptr && g_release_asset != nullptr;
+		if (g_ready && !g_models_ready) {
+			g_output << "[hero_look] the model manager calls were not found, only .actor looks can be worn\n";
+		}
+
 		if (g_ready && !g_anims_ready) {
 			g_output << "[hero_look] the anim set calls were not found, looks are put on without their anim sets\n";
 		}
@@ -237,6 +270,51 @@ namespace rivet_hook::hero_look {
 		__try {
 #endif
 			g_remove_all_skin_items(skin_manager);
+			return true;
+#ifdef _MSC_VER
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			return false;
+		}
+#endif
+	}
+
+	// ModelManager::LoadModel. adds a reference the caller releases
+	static auto
+	call_load_model(const uint64_t id, Asset **out) -> bool {
+#ifdef _MSC_VER
+		__try {
+#endif
+			*out = g_load_model(g_model_manager, &id, nullptr, nullptr);
+			return true;
+#ifdef _MSC_VER
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			return false;
+		}
+#endif
+	}
+
+	static auto
+	call_release(Asset *asset) -> bool {
+#ifdef _MSC_VER
+		__try {
+#endif
+			g_release_asset(g_model_manager, asset);
+			return true;
+#ifdef _MSC_VER
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			return false;
+		}
+#endif
+	}
+
+	// a loaded model straight onto the hero's ModelInst, as
+	// Cinematic2Component::ChangeHeroInEditor does
+	static auto
+	call_switch_to_model(void *model_inst, Asset *model) -> bool {
+#ifdef _MSC_VER
+		__try {
+#endif
+			g_switch_model(model_inst, model, true);
 			return true;
 #ifdef _MSC_VER
 		} __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -478,7 +556,9 @@ namespace rivet_hook::hero_look {
 		return asset;
 	}
 
-	// what to do once the switch to model has landed on the hero
+	// what to do once the switch to model has landed on the hero. every switch
+	// waits, so the models switched away from are only let go once the hero no
+	// longer draws them
 	static auto
 	after_switch(const AfterSwitch action, const uint32_t actor, void *model, const uint64_t asset) -> void {
 		g_after = action;
@@ -486,6 +566,53 @@ namespace rivet_hook::hero_look {
 		g_after_model = model;
 		g_after_asset = asset;
 		g_after_pumps = 0;
+	}
+
+	// the worn .model, let go once the switch away from it has landed
+	static auto
+	retire_held_model() -> void {
+		if (g_held_model == nullptr) {
+			return;
+		}
+
+		if (g_retired_count < MAX_RETIRED_MODELS) {
+			g_retired_models[g_retired_count++] = g_held_model;
+		} else {
+			// never released rather than released while it may still be drawn
+			g_output << "[hero_look] too many model switches in flight, one model stays loaded\n";
+			g_output.flush();
+		}
+
+		g_held_model = nullptr;
+	}
+
+	static auto
+	release_retired_models() -> void {
+		for (auto index = 0; index < g_retired_count; ++index) {
+			call_release(g_retired_models[index]);
+		}
+
+		g_retired_count = 0;
+	}
+
+	// forgets the pending look, letting go of the reference a pending .model holds
+	static auto
+	drop_pending() -> void {
+		if (g_pending_is_model && g_pending_asset != nullptr) {
+			call_release(g_pending_asset);
+		}
+
+		g_pending_path.clear();
+		g_pending_asset = nullptr;
+		g_pending_is_model = false;
+		g_pending_anims = false;
+	}
+
+	static auto
+	is_model_path(const char *path) -> bool {
+		constexpr char EXTENSION[] = ".model";
+		const auto length = strlen(path);
+		return length > sizeof(EXTENSION) - 1 && _stricmp(path + length - (sizeof(EXTENSION) - 1), EXTENSION) == 0;
 	}
 
 	// takes the anim sets a look pushed back off, while the hero is the same actor
@@ -550,17 +677,22 @@ namespace rivet_hook::hero_look {
 		g_output.flush();
 	}
 
-	// the engine's order: parts off, model switched, skin manager rebuilt
+	// the engine's order: parts off, model switched, skin manager rebuilt. the
+	// look is the actor asset id, or a loaded model whose reference this takes
+	// over when it succeeds
 	static auto
-	apply(const uint64_t id, const bool anims, const char **reason) -> bool {
+	apply(const uint64_t id, Asset *model, const bool anims, const char **reason) -> bool {
 		Hero hero {};
 		if (!find_hero(hero, reason)) {
 			return false;
 		}
 
-		const auto *target = loaded_actor_asset(id, reason);
-		if (target == nullptr) {
-			return false;
+		const void *target = nullptr;
+		if (model == nullptr) {
+			target = loaded_actor_asset(id, reason);
+			if (target == nullptr) {
+				return false;
+			}
 		}
 
 		if (anims && (!g_anims_ready || hero.anim == nullptr)) {
@@ -574,12 +706,20 @@ namespace rivet_hook::hero_look {
 		}
 
 		void *switched = nullptr;
-		if (!call_switch(hero.model_inst, target, &switched)) {
-			return fail(reason, "the model switch faulted");
-		}
+		if (model != nullptr) {
+			if (!call_switch_to_model(hero.model_inst, model)) {
+				return fail(reason, "the model switch faulted");
+			}
 
-		if (switched == nullptr) {
-			return fail(reason, "the actor asset's scene object is not a model");
+			switched = model;
+		} else {
+			if (!call_switch(hero.model_inst, target, &switched)) {
+				return fail(reason, "the model switch faulted");
+			}
+
+			if (switched == nullptr) {
+				return fail(reason, "the actor asset's scene object is not a model");
+			}
 		}
 
 		// a skin manager of a type that draws its base model. its Init hands it the
@@ -588,9 +728,62 @@ namespace rivet_hook::hero_look {
 			return fail(reason, "rebuilding the skin manager faulted");
 		}
 
+		retire_held_model();
+		g_held_model = model;
 		after_switch(anims ? AfterSwitch::PushAnimSets : AfterSwitch::None, hero.handle, switched, id);
 		g_worn_actor = hero.handle;
 		return true;
+	}
+
+	// a .model look: loaded through the model manager, one reference held
+	static auto
+	request_model(const char *path, const char **reason) -> Result {
+		if (!g_models_ready) {
+			fail(reason, "the model manager calls were not found, only .actor looks can be worn");
+			return Result::Failed;
+		}
+
+		uint64_t id = 0;
+		if (!AssetLoader::asset_id(path, id)) {
+			fail(reason, "that is not an asset path");
+			return Result::Failed;
+		}
+
+		Asset *model = nullptr;
+		if (!call_load_model(id, &model) || model == nullptr || !ddl::is_readable(model, sizeof(Asset))) {
+			fail(reason, "the model could not be requested");
+			return Result::Failed;
+		}
+
+		// the default cube comes back when there is nothing to load. it is not
+		// reference counted, so there is nothing to release
+		if (model == *reinterpret_cast<Asset *const *>(static_cast<uint8_t *>(g_model_manager) + ASSET_MANAGER_DEFAULT_ASSET)) {
+			fail(reason, "there is no model at that path, in the game or in a mod folder");
+			return Result::Failed;
+		}
+
+		if (model->status == AssetStatus::Error || model->status == AssetStatus::Aborted) {
+			call_release(model);
+			fail(reason, "the model failed to load");
+			return Result::Failed;
+		}
+
+		drop_pending();
+		if (model->status != AssetStatus::Loaded) {
+			g_pending_path = path;
+			g_pending_asset = model;
+			g_pending_is_model = true;
+			return Result::Loading;
+		}
+
+		if (!apply(id, model, false, reason)) {
+			call_release(model);
+			return Result::Failed;
+		}
+
+		g_worn_path = path;
+		g_worn_anims = false;
+		return Result::Applied;
 	}
 
 	auto
@@ -601,8 +794,17 @@ namespace rivet_hook::hero_look {
 		}
 
 		if (path == nullptr || path[0] == '\0') {
-			fail(reason, "no actor asset path");
+			fail(reason, "no asset path");
 			return Result::Failed;
+		}
+
+		if (is_model_path(path)) {
+			if (anims) {
+				fail(reason, "a .model has no anim sets of its own, its .actor has them");
+				return Result::Failed;
+			}
+
+			return request_model(path, reason);
 		}
 
 		Asset *asset = nullptr;
@@ -616,6 +818,7 @@ namespace rivet_hook::hero_look {
 			return Result::Failed;
 		}
 
+		drop_pending();
 		if (asset->status != AssetStatus::Loaded) {
 			g_pending_path = path;
 			g_pending_asset = asset;
@@ -623,9 +826,7 @@ namespace rivet_hook::hero_look {
 			return Result::Loading;
 		}
 
-		g_pending_path.clear();
-		g_pending_asset = nullptr;
-		if (!apply(asset->assetId, anims, reason)) {
+		if (!apply(asset->assetId, nullptr, anims, reason)) {
 			return Result::Failed;
 		}
 
@@ -636,8 +837,7 @@ namespace rivet_hook::hero_look {
 
 	auto
 	restore(const char **reason) -> bool {
-		g_pending_path.clear();
-		g_pending_asset = nullptr;
+		drop_pending();
 
 		Hero hero {};
 		if (!find_hero(hero, reason)) {
@@ -665,6 +865,7 @@ namespace rivet_hook::hero_look {
 		}
 
 		// the switch lands at the end of the frame, the rebuild waits for it
+		retire_held_model();
 		after_switch(AfterSwitch::RebuildSkin, hero.handle, switched, hero.actor->actorAsset->assetId);
 		g_worn_path.clear();
 		g_worn_actor = 0;
@@ -672,20 +873,24 @@ namespace rivet_hook::hero_look {
 		return true;
 	}
 
-	// runs the pending step once the hero's ModelInst holds the model it was
-	// switched to: the skin manager for the type the hero really is, vanity parts
-	// and all, or the target's anim sets
+	// runs once the hero's ModelInst holds the model it was switched to: lets go
+	// of the models switched away from, then the pending step, the skin manager
+	// for the type the hero really is (vanity parts and all) or the target's anim
+	// sets
 	static auto
 	run_after_switch() -> void {
-		if (g_after == AfterSwitch::None || !game_thread::on_game_thread()) {
+		if (g_after_model == nullptr || !game_thread::on_game_thread()) {
 			return;
 		}
 
 		Hero hero {};
 		const char *reason = nullptr;
 		if (!find_hero(hero, &reason) || hero.handle != g_after_actor) {
-			// respawned or gone: a new hero is built with its own look
+			// respawned or gone: a new hero is built with its own look, and the old
+			// one no longer draws anything
+			release_retired_models();
 			g_after = AfterSwitch::None;
+			g_after_model = nullptr;
 			return;
 		}
 
@@ -697,13 +902,15 @@ namespace rivet_hook::hero_look {
 
 		const auto action = g_after;
 		g_after = AfterSwitch::None;
+		g_after_model = nullptr;
 		if (!switched) {
 			g_output << "[hero_look] the switched model did not land in time, going ahead anyway\n";
 		}
 
+		release_retired_models();
 		if (action == AfterSwitch::PushAnimSets) {
 			push_anim_sets(hero, g_after_asset);
-		} else {
+		} else if (action == AfterSwitch::RebuildSkin) {
 			const auto *own = loaded_actor_asset(g_after_asset, &reason);
 			if (own == nullptr || !call_post_activate(hero.skin_manager, own)) {
 				g_last_error = own == nullptr ? reason : "OnTransformationPostActivate faulted";
@@ -717,7 +924,7 @@ namespace rivet_hook::hero_look {
 	// puts the worn look back on a hero that respawned, once it has settled
 	static auto
 	reapply_after_respawn() -> void {
-		if (g_worn_path.empty() || g_pending_asset != nullptr || g_after != AfterSwitch::None || !game_thread::on_game_thread()) {
+		if (g_worn_path.empty() || g_pending_asset != nullptr || g_after_model != nullptr || !game_thread::on_game_thread()) {
 			return;
 		}
 
@@ -762,9 +969,10 @@ namespace rivet_hook::hero_look {
 		}
 
 		if (!ddl::is_readable(g_pending_asset, sizeof(Asset))) {
-			g_last_error = "the pending actor asset went away";
+			g_last_error = "the pending asset went away";
 			g_pending_path.clear();
 			g_pending_asset = nullptr;
+			g_pending_is_model = false;
 			return;
 		}
 
@@ -774,17 +982,28 @@ namespace rivet_hook::hero_look {
 		}
 
 		const auto path = g_pending_path;
-		const auto id = g_pending_asset->assetId;
+		auto *asset = g_pending_asset;
+		const auto id = asset->assetId;
 		const auto anims = g_pending_anims;
+		const auto is_model = g_pending_is_model;
 		g_pending_path.clear();
 		g_pending_asset = nullptr;
+		g_pending_is_model = false;
 		if (status != AssetStatus::Loaded) {
-			g_last_error = "the actor asset failed to load";
+			if (is_model) {
+				call_release(asset);
+			}
+
+			g_last_error = is_model ? "the model failed to load" : "the actor asset failed to load";
 			return;
 		}
 
 		const char *reason = nullptr;
-		if (!apply(id, anims, &reason)) {
+		if (!apply(id, is_model ? asset : nullptr, anims, &reason)) {
+			if (is_model) {
+				call_release(asset);
+			}
+
 			g_last_error = reason != nullptr ? reason : "refused";
 			g_output << "[hero_look] " << path << ": " << g_last_error << "\n";
 			g_output.flush();
@@ -800,11 +1019,13 @@ namespace rivet_hook::hero_look {
 	status() -> nlohmann::json {
 		nlohmann::json result;
 		result["available"] = g_ready;
+		result["models_available"] = g_models_ready;
 		result["worn"] = g_worn_path.empty() ? nlohmann::json() : nlohmann::json(g_worn_path);
 		result["worn_on"] = g_worn_actor;
 		result["pending"] = g_pending_path.empty() ? nlohmann::json() : nlohmann::json(g_pending_path);
 		result["restoring"] = g_after == AfterSwitch::RebuildSkin;
 		result["anim_sets_pushed"] = g_pushed_count;
+		result["models_held"] = (g_held_model != nullptr ? 1 : 0) + g_retired_count;
 		result["last_error"] = g_last_error.empty() ? nlohmann::json() : nlohmann::json(g_last_error);
 		return result;
 	}

@@ -353,12 +353,19 @@ up without checking it exists, so ownership is checked first.
 
 | | |
 |---|---|
-| `rivet.hero_look(actor_asset, [anims])` | the hero wears that actor asset's model; `"applied"`, or `"loading"` while the asset loads. `anims` also puts on the asset's anim sets |
+| `rivet.hero_look(path, [anims])` | the hero wears the model of that `.actor`, or that `.model` itself; `"applied"`, or `"loading"` while the asset loads. `anims` also puts on the asset's anim sets |
 | `rivet.hero_look()` | the hero's own model and outfit back; `"restored"` |
 
 ```lua
 rivet.hero_look("characters/hero/hero_Kit/hero_kit.actor")
+rivet.hero_look("characters/mymod/my_rivet.model")
 ```
+
+A `.model` can come from the game or from any mod folder, including a new path
+no game file uses, and any number can be worn one after another in a session:
+each one is let go when the next look or the restore replaces it. It animates
+properly when it is rigged to Rivet's skeleton; a `.model` has no anim sets of
+its own, so `anims` only applies to `.actor` paths.
 
 Only the look changes. Rivet keeps her moves, abilities, voice and weapons: the
 hook makes the same model switch the game's own hero transformation makes and

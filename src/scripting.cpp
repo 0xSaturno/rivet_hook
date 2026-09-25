@@ -1657,9 +1657,9 @@ namespace rivet_hook::scripting {
 
 	// ------------------------------------------------------------- hero look --
 
-	// rivet.hero_look(actor_asset_path, [anims]) -> "applied" | "loading": the hero
-	// wears that actor asset's model, its gameplay unchanged, and with anims the
-	// asset's anim sets too. a loading asset is applied by the pump once it is in.
+	// rivet.hero_look(path, [anims]) -> "applied" | "loading": the hero wears the
+	// model of that .actor, or that .model itself, its gameplay unchanged, and with
+	// anims an actor asset's anim sets too. a loading asset is applied by the pump once it is in.
 	// rivet.hero_look() puts the hero's own look back.
 	static auto
 	l_hero_look(lua_State *L) -> int {

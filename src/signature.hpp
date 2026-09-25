@@ -154,6 +154,17 @@ namespace rivet_hook {
 	// TransformationManager::FinalizeTransformation. its anim block swaps the anim
 	// sets for the new asset's AnimControllerComponentPrius
 	MAKE_SIGNATURE(TRANSFORMATION_FINALIZE, "48 89 4C 24 08 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 F8 FE FF FF 48 81 EC 08 02 00 00 48 8B F1 80 B9 98 01 00 00 00")
+	// a gameplay load of a model by id through the global model manager:
+	// lea g_ModelManager, then ModelManager::LoadModel (manager, const AssetId &,
+	// loaded from, load info) -> Model, the default cube when it cannot be made
+	MAKE_SIGNATURE(MODEL_MANAGER_LOAD, "48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 89 03 FF C5 8B 87 A4 02 00 00 3B E8 72")
+	// AssetManagerBase::ReleaseAsset (manager, asset) -> bool. the manager's default
+	// asset (+0x88) is not reference counted
+	MAKE_SIGNATURE(ASSET_MANAGER_RELEASE, "48 89 5C 24 08 57 48 83 EC 20 48 8B DA 48 8B F9 8B 15 ?? ?? ?? ?? 48 83 79 40 00 74 ?? 48 85 DB 74 ?? 48 3B 99 88 00 00 00")
+
+	constexpr uint32_t MODEL_MANAGER_ADDRESS = 0x3;
+	constexpr uint32_t MODEL_MANAGER_LOAD_ADDRESS = 0x8;
+
 	// SkinManagerBase::RemoveAllSkinItemsByPart (skin manager)
 	MAKE_SIGNATURE(SKIN_REMOVE_ALL_ITEMS, "40 56 57 41 54 48 83 EC 30 44 8B 61 4C 33 F6 48 8B F9 45 85 E4 0F 84")
 
