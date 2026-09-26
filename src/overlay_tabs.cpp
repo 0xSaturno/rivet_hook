@@ -161,6 +161,20 @@ namespace rivet_hook::overlay {
 
 			ImGui::LabelText("Anim sets pushed", "%d", get<int>(look, "anim_sets_pushed", 0));
 			ImGui::LabelText("Models held", "%d", get<int>(look, "models_held", 0));
+
+			// the last look put on, kept in rivet.toml; restore forgets it
+			const auto remembered = get<std::string>(look, "remembered", "");
+			ImGui::LabelText("Remembered", "%s", remembered.empty() ? "nothing" : remembered.c_str());
+			auto on_launch = get<bool>(look, "apply_on_launch", false);
+			if (ImGui::Checkbox("Apply on launch", &on_launch)) {
+				act(g_hero, [on_launch](std::string &message) {
+					hero_look::set_apply_on_launch(on_launch);
+					message = on_launch ? "the remembered look goes back on after a launch" : "the hero starts with its own look";
+					return true;
+				});
+			}
+
+			ImGui::SetItemTooltip("puts the remembered look back on once the hero first appears after the game starts");
 			if (const auto error = get<std::string>(look, "last_error", ""); !error.empty()) {
 				ImGui::LabelText("Last error", "%s", error.c_str());
 			}
@@ -236,6 +250,43 @@ namespace rivet_hook::overlay {
 			ImGui::EndChild();
 			ImGui::TextDisabled("click to wear; hover for the full path");
 		}
+
+		ImGui::SeparatorText("Play as");
+
+		// the game's own hero swap: hero type, abilities, voice and all
+		if (look.is_object()) {
+			const auto playing = get<std::string>(look, "playing_as", "");
+			ImGui::LabelText("Playing as", "%s", playing.empty() ? "-" : playing == "spawned" ? "the hero it spawned as" : playing.c_str());
+			if (const auto pending = get<std::string>(look, "play_as_pending", ""); !pending.empty()) {
+				ImGui::TextDisabled("loading %s...", pending.c_str());
+			}
+		}
+
+		constexpr const char *HEROES[][2] = { { "Ratchet", "ratchet" }, { "Rivet", "rivet" }, { "Clank", "clank" }, { "Kit", "kit" } };
+		for (auto index = 0; index < 4; ++index) {
+			if (index > 0) {
+				ImGui::SameLine();
+			}
+
+			if (ImGui::Button(HEROES[index][0])) {
+				act(g_hero, [label = std::string(HEROES[index][0]), name = std::string(HEROES[index][1])](std::string &message) {
+					const char *reason = nullptr;
+					switch (hero_look::play_as(hero_look::hero_type(name.c_str()), &reason)) {
+						case hero_look::Result::Applied:
+							message = "playing as " + label;
+							return true;
+						case hero_look::Result::Loading:
+							message = "loading " + label + ", the swap happens once loaded";
+							return true;
+						default:
+							message = why(reason);
+							return false;
+					}
+				});
+			}
+		}
+
+		ImGui::TextDisabled("a full hero swap: moves, abilities and voice change too");
 
 		ImGui::SeparatorText("Outfit");
 

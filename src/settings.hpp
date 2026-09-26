@@ -58,6 +58,14 @@ namespace rivet_hook {
 			int error_limit = 3;
 		} scripts;
 
+		struct HeroLook {
+			// the last look put on the hero, "" once it was taken off again
+			std::string path;
+			bool anims = false;
+			// put that look back on once the hero first appears after a launch
+			bool apply_on_launch = false;
+		} hero_look;
+
 		struct RenderDoc {
 			bool enabled = false;
 			std::string dll_path { "renderdoc.dll" };

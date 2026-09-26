@@ -355,6 +355,7 @@ up without checking it exists, so ownership is checked first.
 |---|---|
 | `rivet.hero_look(path, [anims])` | the hero wears the model of that `.actor`, or that `.model` itself; `"applied"`, or `"loading"` while the asset loads. `anims` also puts on the asset's anim sets |
 | `rivet.hero_look()` | the hero's own model and outfit back; `"restored"` |
+| `rivet.hero_play_as(name)` | the game's own hero swap to `"ratchet"`, `"clank"`, `"rivet"` or `"kit"`; `"applied"` or `"loading"` |
 | `rivet.hero_models([filter])` | the looks there are: `{ mods = { { path, mod } }, game = { { path, name } } }` |
 
 ```lua
@@ -373,6 +374,17 @@ path entry each came from (a later mod replacing the same file wins), and the
 game's own whole bodies on the gameplay skeleton. `filter` narrows both to paths,
 mods or names containing it, in any case. The mod list is read once at startup,
 like the mods themselves.
+
+The last look put on is remembered in `rivet.toml` under `[hero_look]`, and a
+restore forgets it. With `apply_on_launch = true` (the overlay's Hero tab has
+the toggle) it goes back on once the hero first appears after the game starts.
+
+`hero_play_as` is a different thing from a look: it is the game's own hero swap,
+the same `TransformationEvent` the game sends, so the hero type, moves,
+abilities and voice change with the model. The hero's actor asset is loaded
+first when it is not, and the swap happens once it is. A worn look is dropped
+before the swap, and a restore afterwards puts back the hero it is playing as
+now, not the one it spawned as.
 
 Only the look changes. Rivet keeps her moves, abilities, voice and weapons: the
 hook makes the same model switch the game's own hero transformation makes and

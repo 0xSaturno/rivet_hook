@@ -13,10 +13,12 @@
 #include "hero_look.hpp"
 
 #include "ddl_visit.hpp"
+#include "events.hpp"
 #include "game/scene_manager.hpp"
 #include "game_thread.hpp"
 #include "runtime.hpp"
 #include "runtime_loader.hpp"
+#include "settings.hpp"
 #include "scene_query.hpp"
 #include "signature.hpp"
 
@@ -155,6 +157,27 @@ namespace rivet_hook::hero_look {
 	static uint32_t g_pushed_actor = 0;
 	static uint64_t g_pushed_sets[MAX_ANIM_SETS];
 	static int32_t g_pushed_count = 0;
+
+	// the hero actors HeroCharacterConfig lists, by HeroTypes
+	constexpr const char *HERO_ACTORS[] = {
+		"characters/hero/hero_ratchet_ps4/hero_ratchet_ps4.actor",
+		"characters/hero/hero_clank_ps4/hero_clank_ps4.actor",
+		"characters/hero/hero_ratchette_ps4/hero_ratchette_ps4.actor",
+		"characters/hero/hero_Kit/hero_kit.actor",
+	};
+	constexpr const char *HERO_NAMES[] = { "ratchet", "clank", "rivet", "kit" };
+
+	// TransformationManager virtuals: GetTransformationState, -1 before the first
+	// transformation, and GetTransformationAssetId (manager, out, state) -> id *
+	constexpr int32_t TRANSFORM_VTABLE_GET_STATE = 10;
+	constexpr int32_t TRANSFORM_VTABLE_GET_ASSET_ID = 11;
+
+	// a play as whose hero actor asset is still loading
+	static int32_t g_pending_play_as = -1;
+	static Asset *g_pending_play_as_asset = nullptr;
+
+	// the remembered look goes on with the first hero, once, after a launch
+	static bool g_launch_checked = false;
 
 	auto
 	init() -> void {
@@ -463,6 +486,33 @@ namespace rivet_hook::hero_look {
 #endif
 	}
 
+	// the hero's transformation state and the actor asset that state stands for,
+	// asked of the manager itself. state -1 and asset 0 before the first
+	// transformation
+	static auto
+	call_transform_state(void *transform, int32_t *state, uint64_t *asset) -> bool {
+#ifdef _MSC_VER
+		__try {
+#endif
+			using get_state_t = int32_t (*)(void *manager);
+			using get_asset_t = const uint64_t *(*)(void *manager, uint64_t *out, int32_t state);
+			auto *const *vtable = *static_cast<void *const *const *>(transform);
+			*state = reinterpret_cast<get_state_t>(vtable[TRANSFORM_VTABLE_GET_STATE])(transform);
+			*asset = 0;
+			if (*state >= 0) {
+				uint64_t out = 0;
+				const auto *id = reinterpret_cast<get_asset_t>(vtable[TRANSFORM_VTABLE_GET_ASSET_ID])(transform, &out, *state);
+				*asset = id != nullptr ? *id : 0;
+			}
+
+			return true;
+#ifdef _MSC_VER
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			return false;
+		}
+#endif
+	}
+
 	// ------------------------------------------------------------------ hero --
 
 	struct Hero {
@@ -471,6 +521,8 @@ namespace rivet_hook::hero_look {
 		void *skin_manager;
 		// the AnimControllerComponent, null when the hero has none
 		void *anim;
+		// the HeroTransformationManager, null when the hero has none
+		void *transform;
 		void *model_inst;
 	};
 
@@ -518,6 +570,7 @@ namespace rivet_hook::hero_look {
 
 		out.skin_manager = nullptr;
 		out.anim = nullptr;
+		out.transform = nullptr;
 		if (out.actor->components == nullptr || out.actor->componentCount <= 0 || !ddl::is_readable(out.actor->components, sizeof(ComponentPointer) * out.actor->componentCount)) {
 			return fail(reason, "the hero has no readable component list");
 		}
@@ -537,6 +590,8 @@ namespace rivet_hook::hero_look {
 				out.skin_manager = instance;
 			} else if (strcmp(name, "AnimControllerComponent") == 0) {
 				out.anim = instance;
+			} else if (strcmp(name, "HeroTransformationManager") == 0) {
+				out.transform = instance;
 			}
 		}
 
@@ -556,6 +611,40 @@ namespace rivet_hook::hero_look {
 		}
 
 		return asset;
+	}
+
+	// the hero's transformation state, -1 when it never transformed or has no
+	// transformation manager
+	static auto
+	transform_state(const Hero &hero, uint64_t *asset = nullptr) -> int32_t {
+		int32_t state = -1;
+		uint64_t id = 0;
+		if (hero.transform == nullptr || !call_transform_state(hero.transform, &state, &id)) {
+			state = -1;
+			id = 0;
+		}
+
+		if (asset != nullptr) {
+			*asset = id;
+		}
+
+		return state;
+	}
+
+	// the actor asset of the hero it is playing as now: the one its last
+	// transformation put on, else the one it spawned from. 0 when there is none
+	static auto
+	own_asset_id(const Hero &hero) -> uint64_t {
+		uint64_t transformed = 0;
+		if (transform_state(hero, &transformed) >= 0 && transformed != 0) {
+			return transformed;
+		}
+
+		if (hero.actor->actorAsset == nullptr || !ddl::is_readable(hero.actor->actorAsset, sizeof(Asset))) {
+			return 0;
+		}
+
+		return hero.actor->actorAsset->assetId;
 	}
 
 	// what to do once the switch to model has landed on the hero. every switch
@@ -610,6 +699,20 @@ namespace rivet_hook::hero_look {
 		g_pending_anims = false;
 	}
 
+	// the last look put on, kept in rivet.toml for the next launch. only written
+	// when it changes, since a respawn puts the same look on again
+	static auto
+	remember(const std::string &path, const bool anims) -> void {
+		auto &saved = g_settings.hero_look;
+		if (saved.path == path && saved.anims == anims) {
+			return;
+		}
+
+		saved.path = path;
+		saved.anims = anims;
+		g_settings.save();
+	}
+
 	static auto
 	is_model_path(const char *path) -> bool {
 		constexpr char EXTENSION[] = ".model";
@@ -651,7 +754,7 @@ namespace rivet_hook::hero_look {
 
 		uint64_t own[MAX_ANIM_SETS];
 		int32_t own_count = 0;
-		if (const auto *own_asset = loaded_actor_asset(hero.actor->actorAsset->assetId, &reason); own_asset != nullptr) {
+		if (const auto *own_asset = loaded_actor_asset(own_asset_id(hero), &reason); own_asset != nullptr) {
 			call_read_anim_sets(hero.skin_manager, own_asset, own, MAX_ANIM_SETS, &own_count);
 		}
 
@@ -785,6 +888,7 @@ namespace rivet_hook::hero_look {
 
 		g_worn_path = path;
 		g_worn_anims = false;
+		remember(path, false);
 		return Result::Applied;
 	}
 
@@ -834,6 +938,7 @@ namespace rivet_hook::hero_look {
 
 		g_worn_path = path;
 		g_worn_anims = anims;
+		remember(path, anims);
 		return Result::Applied;
 	}
 
@@ -846,11 +951,12 @@ namespace rivet_hook::hero_look {
 			return false;
 		}
 
-		if (hero.actor->actorAsset == nullptr || !ddl::is_readable(hero.actor->actorAsset, sizeof(Asset))) {
+		const auto own_id = own_asset_id(hero);
+		if (own_id == 0) {
 			return fail(reason, "the hero has no actor asset");
 		}
 
-		const auto *own = loaded_actor_asset(hero.actor->actorAsset->assetId, reason);
+		const auto *own = loaded_actor_asset(own_id, reason);
 		if (own == nullptr) {
 			return false;
 		}
@@ -868,11 +974,163 @@ namespace rivet_hook::hero_look {
 
 		// the switch lands at the end of the frame, the rebuild waits for it
 		retire_held_model();
-		after_switch(AfterSwitch::RebuildSkin, hero.handle, switched, hero.actor->actorAsset->assetId);
+		after_switch(AfterSwitch::RebuildSkin, hero.handle, switched, own_id);
 		g_worn_path.clear();
 		g_worn_actor = 0;
 		g_respawned_actor = 0;
+		remember("", false);
 		return true;
+	}
+
+	auto
+	hero_type(const char *name) -> int32_t {
+		if (name == nullptr) {
+			return -1;
+		}
+
+		for (auto type = 0; type < static_cast<int32_t>(std::size(HERO_NAMES)); ++type) {
+			if (_stricmp(name, HERO_NAMES[type]) == 0) {
+				return type;
+			}
+		}
+
+		// the HeroTypes spellings too
+		constexpr struct {
+			const char *name;
+			int32_t type;
+		} ALIASES[] = { { "kratchet", 0 }, { "kclank", 1 }, { "kratchette", 2 }, { "ratchette", 2 }, { "krivet", 2 }, { "kkit", 3 } };
+		for (const auto &[alias, type] : ALIASES) {
+			if (_stricmp(name, alias) == 0) {
+				return type;
+			}
+		}
+
+		return -1;
+	}
+
+	// a look the transformation is about to replace: its anim sets off, its model
+	// let go once the hero no longer draws it, and nothing left to put back on a
+	// respawn. the remembered look stays for the next launch
+	static auto
+	forget_look(const Hero &hero) -> void {
+		drop_pushed_anim_sets(hero);
+		drop_pending();
+		retire_held_model();
+		g_after = AfterSwitch::None;
+		g_after_model = nullptr;
+		g_worn_path.clear();
+		g_worn_actor = 0;
+		g_respawned_actor = 0;
+	}
+
+	auto
+	play_as(const int32_t type, const char **reason) -> Result {
+		if (type < 0 || type >= static_cast<int32_t>(std::size(HERO_ACTORS))) {
+			fail(reason, "the hero is ratchet, clank, rivet or kit");
+			return Result::Failed;
+		}
+
+		if (!g_ready) {
+			fail(reason, "the transformation calls were not found");
+			return Result::Failed;
+		}
+
+		Hero hero {};
+		if (!find_hero(hero, reason)) {
+			return Result::Failed;
+		}
+
+		if (hero.transform == nullptr) {
+			fail(reason, "the hero has no HeroTransformationManager");
+			return Result::Failed;
+		}
+
+		uint64_t target_id = 0;
+		AssetLoader::asset_id(HERO_ACTORS[type], target_id);
+		const auto state = transform_state(hero);
+		if (state == type || (state < 0 && own_asset_id(hero) == target_id)) {
+			fail(reason, "already playing as that hero");
+			return Result::Failed;
+		}
+
+		// the transformation only finds a loaded actor asset, and skips silently
+		// when it is not
+		Asset *asset = nullptr;
+		if (!call_load(HERO_ACTORS[type], &asset) || asset == nullptr || !ddl::is_readable(asset, sizeof(Asset))) {
+			fail(reason, "the hero's actor asset could not be requested");
+			return Result::Failed;
+		}
+
+		if (asset->status == AssetStatus::Error || asset->status == AssetStatus::Aborted) {
+			fail(reason, "the hero's actor asset failed to load");
+			return Result::Failed;
+		}
+
+		if (asset->status != AssetStatus::Loaded) {
+			g_pending_play_as = type;
+			g_pending_play_as_asset = asset;
+			return Result::Loading;
+		}
+
+		g_pending_play_as = -1;
+		g_pending_play_as_asset = nullptr;
+
+		const auto *info = events::find_class("TransformationEvent");
+		if (info == nullptr) {
+			fail(reason, events::ready() ? "TransformationEvent is not registered" : "the event system is not ready");
+			return Result::Failed;
+		}
+
+		// the handler listens for its own actor as the sender, the way
+		// TriggerHeroSwap sends it, not as a target
+		events::Request request;
+		request.sender = hero.handle;
+		request.broadcast = true;
+
+		forget_look(hero);
+		auto *event = events::queue(info, request, reason);
+		if (event == nullptr) {
+			return Result::Failed;
+		}
+
+		ddl::Value value {};
+		value.kind = ddl::ValueKind::Signed;
+		value.as_signed = type;
+		if (!events::set_field(info, event, "TransformationState", value, reason)) {
+			return Result::Failed;
+		}
+
+		return Result::Applied;
+	}
+
+	auto
+	set_apply_on_launch(const bool on) -> void {
+		if (g_settings.hero_look.apply_on_launch != on) {
+			g_settings.hero_look.apply_on_launch = on;
+			g_settings.save();
+		}
+	}
+
+	// the remembered look, once, the first time the pump runs after a launch:
+	// handed to the respawn re-apply, which puts it on when the first hero has
+	// settled
+	static auto
+	check_launch() -> void {
+		if (g_launch_checked) {
+			return;
+		}
+
+		g_launch_checked = true;
+		const auto &saved = g_settings.hero_look;
+		if (!saved.apply_on_launch || saved.path.empty() || !g_worn_path.empty()) {
+			return;
+		}
+
+		g_worn_path = saved.path;
+		g_worn_anims = saved.anims;
+		g_worn_actor = 0;
+		g_output << "[hero_look] putting " << saved.path << " back on once the hero is here\n";
+		g_output.flush();
 	}
 
 	// runs once the hero's ModelInst holds the model it was switched to: lets go
@@ -881,7 +1139,33 @@ namespace rivet_hook::hero_look {
 	// sets
 	static auto
 	run_after_switch() -> void {
-		if (g_after_model == nullptr || !game_thread::on_game_thread()) {
+		if (!game_thread::on_game_thread()) {
+			return;
+		}
+
+		// models retired by a switch the hook did not make (a play as) go once the
+		// hero no longer draws them
+		if (g_after_model == nullptr && g_retired_count > 0) {
+			Hero hero {};
+			const char *reason = nullptr;
+			if (!find_hero(hero, &reason)) {
+				release_retired_models();
+				return;
+			}
+
+			const auto *current = static_cast<uint8_t *>(hero.model_inst) + MODEL_INST_MODEL;
+			const auto *model = ddl::is_readable(current, sizeof(void *)) ? *reinterpret_cast<void *const *>(current) : nullptr;
+			for (auto index = 0; index < g_retired_count; ++index) {
+				if (g_retired_models[index] == model) {
+					return;
+				}
+			}
+
+			release_retired_models();
+			return;
+		}
+
+		if (g_after_model == nullptr) {
 			return;
 		}
 
@@ -963,8 +1247,31 @@ namespace rivet_hook::hero_look {
 
 	auto
 	pump() -> void {
+		if (!game_thread::on_game_thread()) {
+			return;
+		}
+
+		check_launch();
 		run_after_switch();
 		reapply_after_respawn();
+
+		if (g_pending_play_as >= 0) {
+			if (!ddl::is_readable(g_pending_play_as_asset, sizeof(Asset))) {
+				g_pending_play_as = -1;
+				g_pending_play_as_asset = nullptr;
+				g_last_error = "the hero's actor asset went away";
+			} else if (g_pending_play_as_asset->status >= AssetStatus::Loaded) {
+				const auto type = g_pending_play_as;
+				g_pending_play_as = -1;
+				g_pending_play_as_asset = nullptr;
+				const char *reason = nullptr;
+				if (play_as(type, &reason) == Result::Failed) {
+					g_last_error = reason != nullptr ? reason : "refused";
+					g_output << "[hero_look] play as " << HERO_NAMES[type] << ": " << g_last_error << "\n";
+					g_output.flush();
+				}
+			}
+		}
 
 		if (g_pending_asset == nullptr || !game_thread::on_game_thread()) {
 			return;
@@ -1014,6 +1321,7 @@ namespace rivet_hook::hero_look {
 
 		g_worn_path = path;
 		g_worn_anims = anims;
+		remember(path, anims);
 		g_last_error.clear();
 	}
 
@@ -1028,6 +1336,19 @@ namespace rivet_hook::hero_look {
 		result["restoring"] = g_after == AfterSwitch::RebuildSkin;
 		result["anim_sets_pushed"] = g_pushed_count;
 		result["models_held"] = (g_held_model != nullptr ? 1 : 0) + g_retired_count;
+		result["remembered"] = g_settings.hero_look.path.empty() ? nlohmann::json() : nlohmann::json(g_settings.hero_look.path);
+		result["remembered_anims"] = g_settings.hero_look.anims;
+		result["apply_on_launch"] = g_settings.hero_look.apply_on_launch;
+		result["play_as_pending"] = g_pending_play_as >= 0 ? nlohmann::json(HERO_NAMES[g_pending_play_as]) : nlohmann::json();
+
+		// which hero it plays as now, when the hero is here to ask
+		Hero hero {};
+		const char *reason = nullptr;
+		if (find_hero(hero, &reason)) {
+			const auto state = transform_state(hero);
+			result["transformation_state"] = state;
+			result["playing_as"] = state >= 0 && state < static_cast<int32_t>(std::size(HERO_NAMES)) ? nlohmann::json(HERO_NAMES[state]) : nlohmann::json("spawned");
+		}
 		result["last_error"] = g_last_error.empty() ? nlohmann::json() : nlohmann::json(g_last_error);
 		return result;
 	}

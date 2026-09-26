@@ -45,6 +45,22 @@ namespace rivet_hook::hero_look {
 	auto
 	status() -> nlohmann::json;
 
+	// HeroTypes by name: ratchet 0, clank 1, rivet 2, kit 3 (the enum spellings,
+	// kRatchette and so on, too). -1 when it is none of them
+	auto
+	hero_type(const char *name) -> int32_t;
+
+	// the game's own hero swap, as TriggerHeroSwap makes it: the hero becomes
+	// that hero type, gameplay and all, after its actor asset is loaded. a worn
+	// look is dropped first. game thread only.
+	auto
+	play_as(int32_t type, const char **reason) -> Result;
+
+	// whether the remembered look goes back on once the hero first appears after
+	// a launch. saved to rivet.toml. game thread only.
+	auto
+	set_apply_on_launch(bool on) -> void;
+
 	// the looks there are to wear: { mods: [{ path, mod }], game: [{ path, name }] },
 	// each list narrowed to paths containing filter (any case)
 	auto

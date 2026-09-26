@@ -1682,6 +1682,26 @@ namespace rivet_hook::scripting {
 		return 1;
 	}
 
+	// rivet.hero_play_as(name) -> "applied" | "loading": the game's own hero swap
+	// to ratchet, clank, rivet or kit
+	static auto
+	l_hero_play_as(lua_State *L) -> int {
+		const auto *name = luaL_checkstring(L, 1);
+		const auto type = hero_look::hero_type(name);
+		if (type < 0) {
+			luaL_error(L, "%s is not ratchet, clank, rivet or kit", name);
+		}
+
+		const char *reason = "refused";
+		const auto result = hero_look::play_as(type, &reason);
+		if (result == hero_look::Result::Failed) {
+			luaL_error(L, "%s", reason);
+		}
+
+		lua_pushstring(L, result == hero_look::Result::Applied ? "applied" : "loading");
+		return 1;
+	}
+
 	// rivet.hero_models([filter]) -> { mods = { { path, mod }, ... },
 	// game = { { path, name }, ... } }: the .model looks the mod paths provide and
 	// the game's own whole bodies, narrowed to those containing filter
@@ -1937,6 +1957,7 @@ namespace rivet_hook::scripting {
 		{ "vanity_owns", l_vanity_owns },
 		{ "hero_look", l_hero_look },
 		{ "hero_models", l_hero_models },
+		{ "hero_play_as", l_hero_play_as },
 		{ "configs", l_configs },
 		{ "config", l_config },
 		{ "config_set", l_config_set },

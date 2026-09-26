@@ -1876,6 +1876,34 @@ namespace rivet_hook::bridge {
 			return ok(hero_look::models(args.size() > 1 ? args[1].c_str() : ""));
 		}
 
+		// hero.play_as <ratchet|clank|rivet|kit>: the game's own hero swap
+		if (command == "hero.play_as") {
+			const auto type = args.size() > 1 ? hero_look::hero_type(args[1].c_str()) : -1;
+			if (type < 0) {
+				return error("usage: hero.play_as <ratchet|clank|rivet|kit>");
+			}
+
+			const char *reason = nullptr;
+			const auto result = hero_look::play_as(type, &reason);
+			if (result == hero_look::Result::Failed) {
+				return error(reason != nullptr ? reason : "refused");
+			}
+
+			auto status = hero_look::status();
+			status["result"] = result == hero_look::Result::Applied ? "applied" : "loading";
+			return ok(status);
+		}
+
+		// hero.apply_on_launch <on|off>: whether the remembered look goes back on
+		if (command == "hero.apply_on_launch") {
+			if (args.size() < 2 || (args[1] != "on" && args[1] != "off")) {
+				return error("usage: hero.apply_on_launch <on|off>");
+			}
+
+			hero_look::set_apply_on_launch(args[1] == "on");
+			return ok(hero_look::status());
+		}
+
 		if (command == "time.status") {
 			return ok(time_scale::status());
 		}
@@ -2033,7 +2061,7 @@ namespace rivet_hook::bridge {
 		if (args[0] == "help") {
 			nlohmann::json result;
 			result["commands"] = nlohmann::json::array_t {
-				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]", "hud.notify <text>", "hud.message <type> <seconds> <text>", "vanity.equip <bundle>", "vanity.owns <bundle>", "hero.look [.actor or .model path] [anims]", "hero.models [filter]","hero.restore", "config.list [type] [limit]", "config.get <config>", "config.set <config> <field.path> <value>", "script.nodes [filter] [limit]", "script.signal <actor> <component class> <plug> [nth]"
+				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]", "hud.notify <text>", "hud.message <type> <seconds> <text>", "vanity.equip <bundle>", "vanity.owns <bundle>", "hero.look [.actor or .model path] [anims]", "hero.models [filter]", "hero.play_as <ratchet|clank|rivet|kit>", "hero.apply_on_launch <on|off>","hero.restore", "config.list [type] [limit]", "config.get <config>", "config.set <config> <field.path> <value>", "script.nodes [filter] [limit]", "script.signal <actor> <component class> <plug> [nth]"
 			};
 			return ok(result);
 		}

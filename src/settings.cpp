@@ -143,6 +143,10 @@ namespace rivet_hook {
 				LOAD_SETTING(scripts, int, check_interval);
 				LOAD_SETTING(scripts, int, error_limit);
 
+				LOAD_SETTING(hero_look, std::string, path);
+				LOAD_SETTING(hero_look, bool, anims);
+				LOAD_SETTING(hero_look, bool, apply_on_launch);
+
 				LOAD_SETTING(renderdoc, bool, enabled);
 				LOAD_SETTING(renderdoc, std::string, dll_path);
 
@@ -208,6 +212,7 @@ namespace rivet_hook {
 		CREATE_TABLE(ddl);
 		CREATE_TABLE(bridge);
 		CREATE_TABLE(scripts);
+		CREATE_TABLE(hero_look);
 		CREATE_TABLE(renderdoc);
 		CREATE_TABLE(assets);
 		CREATE_TABLE(log);
@@ -237,6 +242,10 @@ namespace rivet_hook {
 		SAVE_SETTING(scripts, budget_ms, "wall clock budget for one script callback in milliseconds; scripts run inside the game frame so overrunning this is a visible stutter");
 		SAVE_SETTING(scripts, check_interval, "how many lua instructions run between budget checks");
 		SAVE_SETTING(scripts, error_limit, "consecutive errors before a callback is switched off");
+
+		SAVE_SETTING(hero_look, path, "the last look put on the hero, a .actor or .model path; empty once it was taken off");
+		SAVE_SETTING(hero_look, anims, "whether that look also carries its actor asset's anim sets");
+		SAVE_SETTING(hero_look, apply_on_launch, "put that look back on once the hero first appears after a launch");
 
 		SAVE_SETTING(renderdoc, enabled, "loads renderdoc.dll into the game; disable by default because it has issues with ReShade");
 		SAVE_SETTING(renderdoc, dll_path, "path to renderdoc/dll");
