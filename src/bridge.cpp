@@ -507,7 +507,9 @@ namespace rivet_hook::bridge {
 
 		const auto base = reinterpret_cast<uintptr_t>(g_game_module);
 
-		const auto describe = [base](const void *pointer) -> nlohmann::json {
+		// generic so it takes the update function pointers too, which gcc
+		// won't convert to const void *
+		const auto describe = [base](const auto pointer) -> nlohmann::json {
 			if (pointer == nullptr) {
 				return nullptr;
 			}
@@ -718,7 +720,12 @@ namespace rivet_hook::bridge {
 	template<int Index>
 	static auto
 	detour_thunk(void *components, uint32_t count, float delta) -> void * {
+#ifdef _MSC_VER
 		return dispatch_detour(Index, components, count, delta, _ReturnAddress());
+#else
+		// mingw declares _ReturnAddress in intrin.h but never defines it
+		return dispatch_detour(Index, components, count, delta, __builtin_return_address(0));
+#endif
 	}
 
 	static update_fn_t g_thunks[MAX_DETOURS] = {

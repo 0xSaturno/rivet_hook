@@ -65,7 +65,7 @@ namespace rivet_hook::hud {
 		// cmp byte [rip + x], 0: the immediate follows the displacement, so rip
 		// is one byte past it
 		g_messages_enabled = reinterpret_cast<const uint8_t *>(show + HUD_SHOW_MESSAGE_ENABLED_END + *reinterpret_cast<const int32_t *>(show + HUD_SHOW_MESSAGE_ENABLED_ADDRESS));
-		g_get_hud = static_cast<get_hud_t>(load_rel_var(action + HUD_MESSAGE_ACTION_GET_HUD, 1));
+		g_get_hud = reinterpret_cast<get_hud_t>(load_rel_var(action + HUD_MESSAGE_ACTION_GET_HUD, 1));
 		g_show_message = reinterpret_cast<show_message_t>(show);
 
 		g_output << "[hud] ShowMessage at " << reinterpret_cast<void *>(g_show_message) << "\n";
