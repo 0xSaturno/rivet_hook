@@ -205,6 +205,21 @@ namespace rivet_hook {
 	constexpr uint32_t SCRIPT_SIGNAL_QUEUE_ADDRESS = 0x3;
 	constexpr uint32_t SCRIPT_SIGNAL_ADD_ENTRY_ADDRESS = 0xF;
 
+	// travel. a script node's call to LoadSystem::GetInstance, straight followed by
+	// the lea of the checkpoint manager inside the load system
+	MAKE_SIGNATURE(LOAD_SYSTEM_CHECKPOINTS, "E8 ?? ?? ?? ?? 41 8B D6 48 8D 98 ?? ?? ?? ?? 48 8D 6B 10")
+	// HeroTransitionManager::RequestCheckpointWarp (manager, checkpoint hash,
+	// dimension checkpoint hash, hero type, lighting mode). it only records the
+	// request; the hero's next update runs the engine's own warp
+	MAKE_SIGNATURE(HERO_REQUEST_CHECKPOINT_WARP, "8B 44 24 28 89 81 88 00 00 00 C6 41 79 01 89 51 7C 44 89 81 80 00 00 00 44 89 89 84 00 00 00 C3")
+
+	constexpr uint32_t LOAD_SYSTEM_GET_INSTANCE_ADDRESS = 0x1;
+	constexpr uint32_t LOAD_SYSTEM_CHECKPOINTS_OFFSET = 0xB;
+	// GetInstance is mov rax, [instance]; ret
+	constexpr uint32_t LOAD_SYSTEM_INSTANCE_ADDRESS = 0x3;
+	// the request flag RequestCheckpointWarp sets, read to tell a pending warp
+	constexpr uint32_t HERO_CHECKPOINT_WARP_PENDING = 0x79;
+
 	// HasBundle looks the bundle up in the config manager first, and dereferences
 	// the result unchecked: lea of the manager, then the call to its lookup
 	constexpr uint32_t VANITY_HAS_BUNDLE_CONFIGS_ADDRESS = 0x22;

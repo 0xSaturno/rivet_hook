@@ -138,6 +138,7 @@ if not get_option('loader_only')
         'src/overlay_tabs.cpp',
         'src/scripting.cpp',
         'src/script_signal.cpp',
+        'src/travel.cpp',
     ]
     deps += [
         imgui_dep,

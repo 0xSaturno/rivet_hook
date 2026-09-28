@@ -32,6 +32,10 @@ namespace rivet_hook::overlay {
 	auto
 	DrawScriptNodes() -> void;
 
+	// the level's checkpoints by planet, each a warp away
+	auto
+	DrawTravel() -> void;
+
 	// lua status, reload, and a one line exec
 	auto
 	DrawScripts() -> void;

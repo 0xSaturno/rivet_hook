@@ -165,6 +165,17 @@ python tools/rivetctl.py script.signal 2113000 SpawnerAction Start
 either a component and a plug or an actor, a class and a plug. See
 [LUA_SCRIPTING.md](LUA_SCRIPTING.md#level-scripts).
 
+## Travel
+
+```bash
+python tools/rivetctl.py level.checkpoints LANDING
+python tools/rivetctl.py level.warp CHK_SAV_01_LANDING
+```
+
+`level.checkpoints [filter] [limit]` and `level.warp <checkpoint name|0xhash>`
+are `rivet.checkpoints` and `rivet.warp`. See
+[LUA_SCRIPTING.md](LUA_SCRIPTING.md#travel).
+
 ## Wire format
 
 One connection, one client at a time. Each message, request or response, is a

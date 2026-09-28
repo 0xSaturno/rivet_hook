@@ -494,6 +494,31 @@ neighbour to follow the wiring, and fire any input plug by hand.
 reflected CRC32 seeded with `0xEDB88320` and no final xor.
 `rivet.hash("PerformWarpEvent")` is the event's hash, `0x38008FE3`.
 
+### Travel
+
+| | |
+|---|---|
+| `rivet.checkpoints([filter])` | the level's checkpoints as `{ name, hash, region }`, names containing `filter` |
+| `rivet.warp(checkpoint)` | warp the hero to a checkpoint, by name (`"CHK_SAV_01_LANDING"`) or `0x` hash |
+
+Every planet is a region of one level, and the level names its spawn points:
+checkpoints, around 860 of them, from landing pads (`CHK_BLIZAR_A_LANDINGPAD`)
+to mission steps, arenas and pocket dimensions. `warp` is the engine's own
+checkpoint warp, the one level scripts trigger: the screen fades, the
+checkpoint's region loads when it is not the current one (another planet,
+say), and the hero is placed on its spawn point, still the same hero.
+
+Warping moves the save's current checkpoint, as the game's own warps do. A
+checkpoint on a planet or in a mission the save has not reached can leave the
+save there. The overlay's Travel tab lists the checkpoints by planet.
+
+```lua
+for _, c in ipairs(rivet.checkpoints("LANDING")) do
+  rivet.log(c.name, c.region)
+end
+rivet.warp("CHK_NEFCITY_SHIP")
+```
+
 ### The game UI
 
 | | |

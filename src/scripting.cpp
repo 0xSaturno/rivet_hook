@@ -32,6 +32,7 @@ extern "C" {
 #include "hero_look.hpp"
 #include "configs.hpp"
 #include "script_signal.hpp"
+#include "travel.hpp"
 #include "game/scene_manager.hpp"
 #include "game_thread.hpp"
 #include "runtime.hpp"
@@ -2098,6 +2099,69 @@ namespace rivet_hook::scripting {
 		return 0;
 	}
 
+	// ---------------------------------------------------------------- travel --
+
+	// rivet.checkpoints([filter]) -> { { name, hash, region }, ... } of the
+	// level's checkpoints whose name contains filter
+	static auto
+	l_checkpoints(lua_State *L) -> int {
+		constexpr int32_t MAX_CHECKPOINTS = 2048;
+		const auto *filter = luaL_optstring(L, 1, "");
+		if (const auto *why = travel::unavailable_reason(); why[0] != '\0') {
+			luaL_error(L, "travel is unavailable: %s", why);
+		}
+
+		// copied out of the json before anything below can raise
+		struct Checkpoint {
+			char name[80];
+			char hash[12];
+			int32_t region;
+		};
+
+		static Checkpoint found[MAX_CHECKPOINTS];
+		int32_t count = 0;
+		{
+			const auto listing = travel::checkpoints(filter, MAX_CHECKPOINTS);
+			for (const auto &entry : listing["checkpoints"]) {
+				_snprintf_s(found[count].name, sizeof(found[count].name), _TRUNCATE, "%s", entry["name"].get<std::string>().c_str());
+				_snprintf_s(found[count].hash, sizeof(found[count].hash), _TRUNCATE, "%s", entry["hash"].get<std::string>().c_str());
+				found[count].region = entry["region"].get<int32_t>();
+				++count;
+			}
+		}
+
+		lua_createtable(L, count, 0);
+		for (int32_t i = 0; i < count; ++i) {
+			lua_createtable(L, 0, 3);
+			lua_pushstring(L, found[i].name);
+			lua_setfield(L, -2, "name");
+			lua_pushstring(L, found[i].hash);
+			lua_setfield(L, -2, "hash");
+			lua_pushinteger(L, found[i].region);
+			lua_setfield(L, -2, "region");
+			lua_rawseti(L, -2, i + 1);
+		}
+
+		return 1;
+	}
+
+	// rivet.warp(checkpoint): the engine's own checkpoint warp to a checkpoint
+	// name ("CHK_SAV_01_LANDING") or its hash as 0x text, across planets too
+	static auto
+	l_warp(lua_State *L) -> int {
+		const auto checkpoint = travel::find(luaL_checkstring(L, 1));
+		if (checkpoint == 0) {
+			luaL_error(L, "the level has no checkpoint with that name or hash");
+		}
+
+		const char *reason = "the warp was refused";
+		if (!travel::warp(checkpoint, &reason)) {
+			luaL_error(L, "%s", reason);
+		}
+
+		return 0;
+	}
+
 	static const luaL_Reg g_api[] = {
 		{ "log", l_log },
 		{ "on_frame", l_on_frame },
@@ -2150,6 +2214,8 @@ namespace rivet_hook::scripting {
 		{ "signal", l_signal },
 		{ "script_nodes", l_script_nodes },
 		{ "script_node", l_script_node },
+		{ "checkpoints", l_checkpoints },
+		{ "warp", l_warp },
 		{ nullptr, nullptr },
 	};
 

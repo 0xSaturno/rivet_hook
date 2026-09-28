@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <format>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,7 @@
 #include "runtime.hpp"
 #include "scene_query.hpp"
 #include "script_signal.hpp"
+#include "travel.hpp"
 #include "scripting.hpp"
 #include "time_scale.hpp"
 #include "vanity.hpp"
@@ -1520,6 +1522,147 @@ namespace rivet_hook::overlay {
 				ImGui::TextDisabled("%s", error.c_str());
 			} else {
 				DrawNodeDetails(state, arriving);
+			}
+		}
+
+		ImGui::EndChild();
+	}
+
+	// --------------------------------------------------------------- travel --
+
+	static Panel g_checkpoints;
+	static Panel g_warp;
+
+	// the planet a checkpoint is on, from its CHK_<TOKEN>_ name. a guess from the
+	// name: the level's own grouping is by region, which has no names here
+	static auto
+	planet_of(const std::string &name) -> std::string {
+		static const std::pair<const char *, const char *> PLANETS[] = {
+			{ "NEFCITY", "Nefarious City" },
+			{ "SARG", "Sargasso" },
+			{ "ZURK", "Zurkie's" },
+			{ "ZURKIES", "Zurkie's" },
+			{ "BLIZ", "Blizar Prime" },
+			{ "BLIZAR", "Blizar Prime" },
+			{ "ARD", "Ardolis" },
+			{ "MOL", "Torren IV" },
+			{ "CORD", "Cordelion" },
+			{ "SAV", "Savali" },
+			{ "SAVALI", "Savali" },
+			{ "ZORDOOM", "Zordoom" },
+			{ "MALINON", "Megalopolis & intros" },
+			{ "MEGA", "Megalopolis & intros" },
+			{ "RIVET2", "Megalopolis & intros" },
+			{ "INTRO", "Megalopolis & intros" },
+			{ "FINALE", "Megalopolis & intros" },
+			{ "PD", "Pocket dimensions" },
+			{ "CPZ", "Clank puzzles" },
+			{ "HAX", "Glitch" },
+			{ "TRANSITION", "Space travel" },
+		};
+
+		if (!name.starts_with("CHK_")) {
+			return "Other";
+		}
+
+		const auto end = name.find('_', 4);
+		const auto token = name.substr(4, end == std::string::npos ? std::string::npos : end - 4);
+		for (const auto &[key, planet] : PLANETS) {
+			if (token == key) {
+				return planet;
+			}
+		}
+
+		return "Other";
+	}
+
+	auto
+	DrawTravel() -> void {
+		static std::string filter;
+
+		const auto entered = ImGui::InputTextWithHint("##checkpoint_filter", "checkpoint name contains, e.g. LANDING", &filter, ImGuiInputTextFlags_EnterReturnsTrue);
+		ImGui::SameLine();
+		if (ImGui::Button("List") || entered) {
+			invalidate(g_checkpoints);
+		}
+
+		// grouped once per read, not every frame
+		refresh(g_checkpoints, [filter = filter] {
+			const auto listing = travel::checkpoints(filter.c_str(), 4096);
+
+			std::map<std::string, nlohmann::json::array_t> planets;
+			for (const auto &checkpoint : listing["checkpoints"]) {
+				const auto name = checkpoint["name"].get<std::string>();
+				nlohmann::json entry;
+				entry["name"] = name;
+				entry["region"] = checkpoint["region"];
+				planets[planet_of(name)].emplace_back(std::move(entry));
+			}
+
+			nlohmann::json state;
+			state["reason"] = listing["reason"];
+			state["filtered"] = !filter.empty();
+			nlohmann::json::array_t groups;
+			for (auto &[planet, checkpoints] : planets) {
+				nlohmann::json group;
+				group["planet"] = planet;
+				group["checkpoints"] = std::move(checkpoints);
+				groups.emplace_back(std::move(group));
+			}
+
+			state["groups"] = std::move(groups);
+			return state;
+		}, ON_DEMAND);
+
+		ImGui::TextDisabled("the game's own checkpoint warp. it moves the save's current checkpoint too, so a checkpoint on a planet or mission you have not reached can leave the save there");
+		draw_message(g_warp);
+
+		std::lock_guard guard { g_checkpoints.lock };
+		const auto &state = g_checkpoints.state;
+		if (const auto reason = get<std::string>(state, "reason", "reading..."); !reason.empty()) {
+			draw_reason(reason);
+			return;
+		}
+
+		const auto open_all = get<bool>(state, "filtered", false);
+		if (!ImGui::BeginChild("checkpoints", ImVec2(0, 0))) {
+			ImGui::EndChild();
+			return;
+		}
+
+		auto row = 0;
+		for (const auto &group : member(state, "groups")) {
+			const auto &checkpoints = member(group, "checkpoints");
+			const auto header = std::format("{}  ({})", get<std::string>(group, "planet", ""), checkpoints.size());
+			if (open_all) {
+				ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+			}
+
+			if (!ImGui::CollapsingHeader(header.c_str())) {
+				row += static_cast<int>(checkpoints.size());
+				continue;
+			}
+
+			for (const auto &checkpoint : checkpoints) {
+				const auto name = get<std::string>(checkpoint, "name", "");
+				if (ImGui::SmallButton(std::format("Warp##{}", row++).c_str())) {
+					act(g_warp, [name](std::string &message) {
+						const auto hash = travel::find(name.c_str());
+						const char *reason = nullptr;
+						if (hash == 0 || !travel::warp(hash, &reason)) {
+							message = name + ": " + (hash == 0 ? std::string("no longer in the level") : why(reason));
+							return false;
+						}
+
+						message = "warping to " + name;
+						return true;
+					});
+				}
+
+				ImGui::SameLine();
+				ImGui::Text("%s", name.c_str());
+				ImGui::SameLine();
+				ImGui::TextDisabled("region %d", get<int>(checkpoint, "region", -1));
 			}
 		}
 

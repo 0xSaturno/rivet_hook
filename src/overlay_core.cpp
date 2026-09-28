@@ -462,10 +462,11 @@ namespace rivet_hook {
 
 	using RivetImGuiCallback = void(*)();
 	using RivetImGuiCheckCallback = bool(*)();
-	static std::array<std::tuple<RivetImGuiCallback, RivetImGuiCheckCallback, const char*>, 10> tabs {{
+	static std::array<std::tuple<RivetImGuiCallback, RivetImGuiCheckCallback, const char*>, 11> tabs {{
 		{ DrawActorGroups, CheckActorGroups, "World" },
 		{ DrawDebugSpawn, CheckSpawnBot, "Spawn Actor" },
 		{ overlay::DrawHero, nullptr, "Hero" },
+		{ overlay::DrawTravel, nullptr, "Travel" },
 		{ overlay::DrawCameraTime, nullptr, "Camera & Time" },
 		{ overlay::DrawHud, nullptr, "HUD" },
 		{ overlay::DrawEvents, nullptr, "Events" },
