@@ -24,10 +24,37 @@ namespace rivet_hook::travel {
 	unavailable_reason() -> const char *;
 
 	// the level's checkpoints whose name contains filter (every one when it is
-	// empty), as { name, hash, region, type, position }, at most limit of them.
-	// game thread only.
+	// empty), as { name, hash, region, area, type, position }, at most limit of
+	// them. area is the top level region the checkpoint is in, a planet or an
+	// open world. game thread only.
 	auto
 	checkpoints(const char *filter, size_t limit) -> nlohmann::json;
+
+	// the level's regions whose path contains filter, as { index, path, type,
+	// area, zones }. type is global, container, unit, open_world, tile or overlay.
+	// game thread only.
+	auto
+	regions(const char *filter, size_t limit) -> nlohmann::json;
+
+	// the level's zones whose path contains filter, each with the regions that
+	// load it and the route go would take: { kind, checkpoint, region }, kind
+	// being loaded (always there), checkpoint (a warp), overlay (loaded on top of
+	// where the hero is) or none. game thread only.
+	auto
+	zones(const char *filter, size_t limit) -> nlohmann::json;
+
+	// goes where a zone is loaded: warps to the checkpoint its route names, or
+	// loads its overlay region. zone is its path, its asset id as 16 hex digits,
+	// or a fragment only one zone path contains. describes what it did in
+	// message. game thread only.
+	auto
+	go(const char *zone, char *message, size_t message_size, const char **reason) -> bool;
+
+	// loads an overlay region on top of whatever is loaded, or unloads one. region
+	// is its index, its path, or a fragment only one overlay path contains. game
+	// thread only.
+	auto
+	overlay(const char *region, bool load, char *message, size_t message_size, const char **reason) -> bool;
 
 	// the hash of a checkpoint the level has, by exact name or as 0x hex text,
 	// or 0. game thread only.

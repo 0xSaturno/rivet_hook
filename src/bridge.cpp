@@ -1809,16 +1809,44 @@ namespace rivet_hook::bridge {
 		return ok(result);
 	}
 
-	// level.checkpoints [filter] [limit], level.warp <checkpoint name|0xhash>
+	// level.go <zone>, level.overlay <region>, level.unload <region>: the rest of
+	// the line, since level paths can hold spaces
+	static auto
+	cmd_level_line(const std::string &command, const std::string &target) -> std::string {
+		if (target.empty()) {
+			return error("usage: " + command + (command == "level.go" ? " <zone path, fragment or asset id>" : " <overlay region path, fragment or index>"));
+		}
+
+		char message[0x180];
+		const char *reason = nullptr;
+		const auto worked = command == "level.go" ? travel::go(target.c_str(), message, sizeof(message), &reason) : travel::overlay(target.c_str(), command == "level.overlay", message, sizeof(message), &reason);
+		if (!worked) {
+			return error(reason != nullptr ? reason : "refused");
+		}
+
+		nlohmann::json result;
+		result["done"] = message;
+		return ok(result);
+	}
+
+	// level.checkpoints|regions|zones [filter] [limit], level.warp <checkpoint name|0xhash>
 	static auto
 	cmd_level(const std::vector<std::string> &args) -> std::string {
-		if (args[0] == "level.checkpoints") {
+		if (args[0] == "level.checkpoints" || args[0] == "level.regions" || args[0] == "level.zones") {
+			const auto list = [&args](const char *filter, const size_t limit) {
+				if (args[0] == "level.checkpoints") {
+					return travel::checkpoints(filter, limit);
+				}
+
+				return args[0] == "level.regions" ? travel::regions(filter, limit) : travel::zones(filter, limit);
+			};
+
 			// a lone number is the limit, not a filter
 			if (args.size() == 2 && !args[1].empty() && std::isdigit(static_cast<unsigned char>(args[1][0]))) {
-				return ok(travel::checkpoints("", parse_limit(args, 1, 1000)));
+				return ok(list("", parse_limit(args, 1, 1000)));
 			}
 
-			return ok(travel::checkpoints(args.size() > 1 ? args[1].c_str() : "", parse_limit(args, 2, 1000)));
+			return ok(list(args.size() > 1 ? args[1].c_str() : "", parse_limit(args, 2, args[0] == "level.zones" ? 100 : 1000)));
 		}
 
 		if (args.size() < 2) {
@@ -1856,6 +1884,12 @@ namespace rivet_hook::bridge {
 
 		if (line.starts_with("hud.notify ") || line.starts_with("hud.message ")) {
 			return cmd_hud(line);
+		}
+
+		for (const std::string_view prefix : { "level.go", "level.overlay", "level.unload" }) {
+			if (line == prefix || (line.starts_with(prefix) && line.size() > prefix.size() && line[prefix.size()] == ' ')) {
+				return cmd_level_line(std::string(prefix), line.size() > prefix.size() ? line.substr(prefix.size() + 1) : std::string());
+			}
 		}
 
 		// the json options are the rest of the line, same reason
@@ -1953,7 +1987,7 @@ namespace rivet_hook::bridge {
 			return cmd_script_node(args);
 		}
 
-		if (command == "level.checkpoints" || command == "level.warp") {
+		if (command == "level.checkpoints" || command == "level.regions" || command == "level.zones" || command == "level.warp") {
 			return cmd_level(args);
 		}
 
@@ -2159,7 +2193,7 @@ namespace rivet_hook::bridge {
 		if (args[0] == "help") {
 			nlohmann::json result;
 			result["commands"] = nlohmann::json::array_t {
-				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]", "hud.notify <text>", "hud.message <type> <seconds> <text>", "vanity.equip <bundle>", "vanity.owns <bundle>", "hero.look [.actor or .model path] [anims]", "hero.models [filter]", "hero.play_as <ratchet|clank|rivet|kit>", "hero.apply_on_launch <on|off>","hero.restore", "config.list [type] [limit]", "config.get <config>", "config.set <config> <field.path> <value>", "script.nodes [filter] [limit]", "script.node <component>", "script.signal <component> <plug>", "script.signal <actor> <component class> <plug> [nth]", "level.checkpoints [filter] [limit]", "level.warp <checkpoint name|0xhash>"
+				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]", "hud.notify <text>", "hud.message <type> <seconds> <text>", "vanity.equip <bundle>", "vanity.owns <bundle>", "hero.look [.actor or .model path] [anims]", "hero.models [filter]", "hero.play_as <ratchet|clank|rivet|kit>", "hero.apply_on_launch <on|off>","hero.restore", "config.list [type] [limit]", "config.get <config>", "config.set <config> <field.path> <value>", "script.nodes [filter] [limit]", "script.node <component>", "script.signal <component> <plug>", "script.signal <actor> <component class> <plug> [nth]", "level.checkpoints [filter] [limit]", "level.warp <checkpoint name|0xhash>", "level.regions [filter] [limit]", "level.zones <filter> [limit]", "level.go <zone>", "level.overlay <region>", "level.unload <region>"
 			};
 			return ok(result);
 		}

@@ -498,8 +498,11 @@ reflected CRC32 seeded with `0xEDB88320` and no final xor.
 
 | | |
 |---|---|
-| `rivet.checkpoints([filter])` | the level's checkpoints as `{ name, hash, region }`, names containing `filter` |
+| `rivet.checkpoints([filter])` | the level's checkpoints as `{ name, hash, region, area }`, names containing `filter` |
 | `rivet.warp(checkpoint)` | warp the hero to a checkpoint, by name (`"CHK_SAV_01_LANDING"`) or `0x` hash |
+| `rivet.zones(filter, [limit])` | the level's zones whose path contains `filter`, as `{ path, asset, route, checkpoint, region }` |
+| `rivet.go(zone)` | go where a zone is loaded; returns what it did |
+| `rivet.overlay(region, [load])` | load an overlay region on top of what is loaded, or unload it with `load = false` |
 
 Every planet is a region of one level, and the level names its spawn points:
 checkpoints, around 860 of them, from landing pads (`CHK_BLIZAR_A_LANDINGPAD`)
@@ -510,14 +513,50 @@ say), and the hero is placed on its spawn point, still the same hero.
 
 Warping moves the save's current checkpoint, as the game's own warps do. A
 checkpoint on a planet or in a mission the save has not reached can leave the
-save there. The overlay's Travel tab lists the checkpoints by planet.
+save there. `area` is the top level region a checkpoint is in, named after its
+file: `Savali`, `Savali (open world)`, `PrisonShip`.
+
+The engine never loads a single `.zone`. A level is a tree of regions, and a
+region loads a list of zones: a planet's instanced areas, the 128 m tiles of an
+open world that stream in by distance, and overlays, which load on top of
+whatever else is loaded (pocket dimensions, Clank puzzles, mission content).
+`rivet.go` looks up which regions list a zone and takes the first route that
+works:
+
+| route | |
+|---|---|
+| `loaded` | the zone is in the global region, always loaded |
+| `checkpoint` | a warp to a checkpoint in the zone's region; for a tile, the checkpoint nearest to it in the same open world |
+| `overlay` | the zone's overlay region is loaded on top, where its author placed it. The hero does not move |
+| `story` | the zone is in a story overlay, out of reach (see below) |
+| `none` | the zone is only in a region no checkpoint loads |
+
+Most overlays belong to the story: a planet's state before and after each
+mission, arena rounds, mission props. The game's custom overlay system loads
+those while the save's mission state calls for them and unloads them within a
+frame otherwise, so `rivet.overlay` refuses them rather than pretend. The rest,
+around 25, are loaded on request by the rifts and puzzles and stay loaded when
+asked for: pocket dimensions, Clank and hacking puzzles, arena platforms.
+`level.regions` marks each overlay with `story` and whether it is `loaded`.
+
+`zone` is a full path, the zone's asset id as 16 hex digits, or any part of
+the path that only one zone has. Paths match without regard to case.
 
 ```lua
 for _, c in ipairs(rivet.checkpoints("LANDING")) do
-  rivet.log(c.name, c.region)
+  rivet.log(c.area, c.name)
 end
 rivet.warp("CHK_NEFCITY_SHIP")
+
+for _, z in ipairs(rivet.zones("savali/tile_a21")) do
+  rivet.log(z.path, z.route, z.checkpoint)
+end
+rivet.go("savali/Tile_A21/Tile_A21_gp.zone")
+rivet.overlay("SARG_PocketDim_01")
 ```
+
+The overlay's Travel tab has the same three views: checkpoints by area, a zone
+search with a Go button, and the overlay regions with Load and Unload.
 
 ### The game UI
 

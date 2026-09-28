@@ -213,6 +213,22 @@ namespace rivet_hook {
 	// request; the hero's next update runs the engine's own warp
 	MAKE_SIGNATURE(HERO_REQUEST_CHECKPOINT_WARP, "8B 44 24 28 89 81 88 00 00 00 C6 41 79 01 89 51 7C 44 89 81 80 00 00 00 44 89 89 84 00 00 00 C3")
 
+	// the dimension system asking for its overlay: GetRegionAssetId, then
+	// LoadSystem::RequestOverlayLoad (load system, region asset id *) -> bool
+	MAKE_SIGNATURE(LOAD_SYSTEM_OVERLAY_LOAD, "44 8B 43 04 48 8D 54 24 30 48 8B C8 E8 ?? ?? ?? ?? 48 8B D0 48 8D 0D ?? ?? ?? ?? E8")
+	// a rift portal dropping its destination: LoadSystem::RequestOverlayUnload
+	// (load system, region asset id *) -> bool, then clearing the id
+	MAKE_SIGNATURE(LOAD_SYSTEM_OVERLAY_UNLOAD, "48 8D 53 54 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 33 FF 48 89 7B 54")
+
+	// the load system's reset of the story overlays: lea CustomOverlaySystem, call
+	MAKE_SIGNATURE(CUSTOM_OVERLAY_SYSTEM, "48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? B9 1E 00 00 00 48 8D 83 A0 43 00 00")
+
+	constexpr uint32_t CUSTOM_OVERLAY_SYSTEM_ADDRESS = 0x3;
+	// RequestOverlayLoad forwards to the overlay manager with add rcx, imm32
+	constexpr uint32_t OVERLAY_LOAD_MANAGER_ADD = 0xE;
+	constexpr uint32_t OVERLAY_LOAD_MANAGER_OFFSET = 0x11;
+	constexpr uint32_t LOAD_SYSTEM_OVERLAY_LOAD_ADDRESS = 0x1C;
+	constexpr uint32_t LOAD_SYSTEM_OVERLAY_UNLOAD_ADDRESS = 0xC;
 	constexpr uint32_t LOAD_SYSTEM_GET_INSTANCE_ADDRESS = 0x1;
 	constexpr uint32_t LOAD_SYSTEM_CHECKPOINTS_OFFSET = 0xB;
 	// GetInstance is mov rax, [instance]; ret

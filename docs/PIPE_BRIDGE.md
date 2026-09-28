@@ -172,9 +172,20 @@ python tools/rivetctl.py level.checkpoints LANDING
 python tools/rivetctl.py level.warp CHK_SAV_01_LANDING
 ```
 
+```bash
+python tools/rivetctl.py level.zones savali/tile_a21
+python tools/rivetctl.py level.go savali/Tile_A21/Tile_A21_gp.zone
+python tools/rivetctl.py level.overlay SARG_PocketDim_01
+```
+
 `level.checkpoints [filter] [limit]` and `level.warp <checkpoint name|0xhash>`
-are `rivet.checkpoints` and `rivet.warp`. See
-[LUA_SCRIPTING.md](LUA_SCRIPTING.md#travel).
+are `rivet.checkpoints` and `rivet.warp`; `level.zones <filter> [limit]`,
+`level.go <zone>` and `level.overlay <region>` are `rivet.zones`, `rivet.go` and
+`rivet.overlay`, with `level.unload <region>` for `rivet.overlay(region, false)`.
+`level.regions [filter] [limit]` lists regions with their type and area, and
+for overlays whether they are `loaded` and whether the `story` drives them. The
+`go`, `overlay` and `unload` targets are the rest of the line, since some level
+paths hold spaces. See [LUA_SCRIPTING.md](LUA_SCRIPTING.md#travel).
 
 ## Wire format
 

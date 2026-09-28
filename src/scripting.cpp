@@ -2101,7 +2101,7 @@ namespace rivet_hook::scripting {
 
 	// ---------------------------------------------------------------- travel --
 
-	// rivet.checkpoints([filter]) -> { { name, hash, region }, ... } of the
+	// rivet.checkpoints([filter]) -> { { name, hash, region, area }, ... } of the
 	// level's checkpoints whose name contains filter
 	static auto
 	l_checkpoints(lua_State *L) -> int {
@@ -2115,6 +2115,7 @@ namespace rivet_hook::scripting {
 		struct Checkpoint {
 			char name[80];
 			char hash[12];
+			char area[64];
 			int32_t region;
 		};
 
@@ -2125,6 +2126,7 @@ namespace rivet_hook::scripting {
 			for (const auto &entry : listing["checkpoints"]) {
 				_snprintf_s(found[count].name, sizeof(found[count].name), _TRUNCATE, "%s", entry["name"].get<std::string>().c_str());
 				_snprintf_s(found[count].hash, sizeof(found[count].hash), _TRUNCATE, "%s", entry["hash"].get<std::string>().c_str());
+				_snprintf_s(found[count].area, sizeof(found[count].area), _TRUNCATE, "%s", entry["area"].get<std::string>().c_str());
 				found[count].region = entry["region"].get<int32_t>();
 				++count;
 			}
@@ -2132,11 +2134,13 @@ namespace rivet_hook::scripting {
 
 		lua_createtable(L, count, 0);
 		for (int32_t i = 0; i < count; ++i) {
-			lua_createtable(L, 0, 3);
+			lua_createtable(L, 0, 4);
 			lua_pushstring(L, found[i].name);
 			lua_setfield(L, -2, "name");
 			lua_pushstring(L, found[i].hash);
 			lua_setfield(L, -2, "hash");
+			lua_pushstring(L, found[i].area);
+			lua_setfield(L, -2, "area");
 			lua_pushinteger(L, found[i].region);
 			lua_setfield(L, -2, "region");
 			lua_rawseti(L, -2, i + 1);
@@ -2160,6 +2164,96 @@ namespace rivet_hook::scripting {
 		}
 
 		return 0;
+	}
+
+	// rivet.zones(filter, [limit]) -> { { path, asset, route, checkpoint, region },
+	// ... } of the level's zones whose path contains filter, with how rivet.go
+	// would reach each: route is loaded, checkpoint, overlay or none
+	static auto
+	l_zones(lua_State *L) -> int {
+		constexpr int32_t MAX_ZONES = 256;
+		const auto *filter = luaL_checkstring(L, 1);
+		const auto limit = static_cast<size_t>(luaL_optinteger(L, 2, 50));
+		if (const auto *why = travel::unavailable_reason(); why[0] != '\0') {
+			luaL_error(L, "travel is unavailable: %s", why);
+		}
+
+		// copied out of the json before anything below can raise
+		struct Zone {
+			char path[160];
+			char asset[20];
+			char route[12];
+			char checkpoint[80];
+			int32_t region;
+		};
+
+		static Zone found[MAX_ZONES];
+		int32_t count = 0;
+		{
+			const auto listing = travel::zones(filter, limit < MAX_ZONES ? limit : MAX_ZONES);
+			for (const auto &entry : listing["zones"]) {
+				auto &zone = found[count++];
+				const auto &route = entry["route"];
+				_snprintf_s(zone.path, sizeof(zone.path), _TRUNCATE, "%s", entry["path"].get<std::string>().c_str());
+				_snprintf_s(zone.asset, sizeof(zone.asset), _TRUNCATE, "%s", entry["asset"].get<std::string>().c_str());
+				_snprintf_s(zone.route, sizeof(zone.route), _TRUNCATE, "%s", route["kind"].get<std::string>().c_str());
+				_snprintf_s(zone.checkpoint, sizeof(zone.checkpoint), _TRUNCATE, "%s", route["checkpoint"].is_string() ? route["checkpoint"].get<std::string>().c_str() : "");
+				zone.region = route["region"].get<int32_t>();
+			}
+		}
+
+		lua_createtable(L, count, 0);
+		for (int32_t i = 0; i < count; ++i) {
+			lua_createtable(L, 0, 5);
+			lua_pushstring(L, found[i].path);
+			lua_setfield(L, -2, "path");
+			lua_pushstring(L, found[i].asset);
+			lua_setfield(L, -2, "asset");
+			lua_pushstring(L, found[i].route);
+			lua_setfield(L, -2, "route");
+			if (found[i].checkpoint[0] != '\0') {
+				lua_pushstring(L, found[i].checkpoint);
+				lua_setfield(L, -2, "checkpoint");
+			}
+
+			lua_pushinteger(L, found[i].region);
+			lua_setfield(L, -2, "region");
+			lua_rawseti(L, -2, i + 1);
+		}
+
+		return 1;
+	}
+
+	// rivet.go(zone) -> what it did. goes where a zone is loaded: a warp to the
+	// checkpoint that loads its region, or its overlay loaded on top. zone is a
+	// path, an asset id or a fragment only one zone path contains
+	static auto
+	l_go(lua_State *L) -> int {
+		char message[0x180];
+		const char *reason = "refused";
+		if (!travel::go(luaL_checkstring(L, 1), message, sizeof(message), &reason)) {
+			luaL_error(L, "%s", reason);
+		}
+
+		lua_pushstring(L, message);
+		return 1;
+	}
+
+	// rivet.overlay(region, [load]) -> what it did. loads an overlay region on top
+	// of what is loaded, or unloads it when load is false
+	static auto
+	l_overlay(lua_State *L) -> int {
+		const auto *region = luaL_checkstring(L, 1);
+		const auto load = lua_isnoneornil(L, 2) || lua_toboolean(L, 2) != 0;
+
+		char message[0x180];
+		const char *reason = "refused";
+		if (!travel::overlay(region, load, message, sizeof(message), &reason)) {
+			luaL_error(L, "%s", reason);
+		}
+
+		lua_pushstring(L, message);
+		return 1;
 	}
 
 	static const luaL_Reg g_api[] = {
@@ -2216,6 +2310,9 @@ namespace rivet_hook::scripting {
 		{ "script_node", l_script_node },
 		{ "checkpoints", l_checkpoints },
 		{ "warp", l_warp },
+		{ "zones", l_zones },
+		{ "go", l_go },
+		{ "overlay", l_overlay },
 		{ nullptr, nullptr },
 	};
 
