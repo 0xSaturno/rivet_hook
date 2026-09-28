@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <format>
 #include <string>
+#include <vector>
 
 #include <imgui.h>
 #include <imgui_stdlib.h>
@@ -22,6 +23,7 @@
 #include "overlay_panel.hpp"
 #include "runtime.hpp"
 #include "scene_query.hpp"
+#include "script_signal.hpp"
 #include "scripting.hpp"
 #include "time_scale.hpp"
 #include "vanity.hpp"
@@ -1170,6 +1172,354 @@ namespace rivet_hook::overlay {
 				ImGui::Text("%s  %s", get<std::string>(state, "type", "").c_str(), selected.c_str());
 				ImGui::Separator();
 				DrawConfigFields(member(state, "fields"), "", selected);
+			}
+		}
+
+		ImGui::EndChild();
+	}
+
+	// --------------------------------------------------------- script nodes --
+
+	static Panel g_node_list;
+	// the node's own plugs and vars, cheap enough to read every second
+	static Panel g_node;
+	// the connections arriving, a walk over every node, read on demand only
+	static Panel g_node_inputs;
+
+	// the node on the right, and the ones visited before it for Back. render
+	// thread only
+	static uint32_t g_node_selected = 0;
+	static std::vector<uint32_t> g_node_history;
+
+	// the reads below run on the game thread, one at a time
+	static uint64_t g_node_deadline = 0;
+	static script_signal::Node g_node_scratch;
+
+	static auto
+	node_scan_expired() -> bool {
+		return GetTickCount64() > g_node_deadline;
+	}
+
+	static auto
+	select_node(const uint32_t component) -> void {
+		if (component == 0 || component == g_node_selected) {
+			return;
+		}
+
+		if (g_node_selected != 0) {
+			g_node_history.push_back(g_node_selected);
+		}
+
+		g_node_selected = component;
+		invalidate(g_node);
+		invalidate(g_node_inputs);
+	}
+
+	// a plug's name when it is known, its hash otherwise
+	static auto
+	plug_label(const nlohmann::json &entry, const char *key) -> std::string {
+		const auto name = get<std::string>(entry, (std::string(key) + "_name").c_str(), "");
+		return name.empty() ? get<std::string>(entry, key, "?") : name;
+	}
+
+	// a clickable neighbour. row keeps the ids apart when one node shows twice
+	static auto
+	draw_node_link(const nlohmann::json &ref, const int row) -> void {
+		const auto component = get<uint32_t>(ref, "component", 0);
+		const auto label = std::format("{} {}##link{}", get<std::string>(ref, "class", "(gone)"), component, row);
+		if (ImGui::Selectable(label.c_str(), false)) {
+			select_node(component);
+		}
+	}
+
+	static auto
+	fire_plug(const uint32_t component, const std::string &plug) -> void {
+		act(g_node, [component, plug](std::string &message) {
+			const char *reason = nullptr;
+			if (!script_signal::send(component, script_signal::plug_hash(plug.c_str()), &reason)) {
+				message = plug + ": " + why(reason);
+				return false;
+			}
+
+			message = "fired " + plug + " on " + std::to_string(component);
+			return true;
+		});
+	}
+
+	static auto
+	var_text(const nlohmann::json &var) -> std::string {
+		if (!get<bool>(var, "live", false)) {
+			return "(var gone)";
+		}
+
+		const auto it = var.find("value");
+		if (it == var.end() || it->is_null()) {
+			return "";
+		}
+
+		const auto &value = *it;
+		if (value.is_boolean()) {
+			return value.get<bool>() ? "true" : "false";
+		}
+
+		if (value.is_number()) {
+			return std::format("{:g}", value.get<double>());
+		}
+
+		if (value.is_string()) {
+			return "\"" + value.get<std::string>() + "\"";
+		}
+
+		if (value.is_array()) {
+			std::string text;
+			for (const auto &element : value) {
+				text += (text.empty() ? "" : ", ") + std::format("{:g}", element.get<double>());
+			}
+
+			return text;
+		}
+
+		// actors
+		const auto count = get<int>(value, "count", 0);
+		std::string text = get<bool>(value, "group", false) ? std::format("group of {}:", count) : (count > 0 ? "actor" : "uid " + get<std::string>(value, "uid", ""));
+		for (const auto &handle : member(value, "actors")) {
+			text += " " + std::to_string(handle.get<uint32_t>());
+		}
+
+		return text;
+	}
+
+	static auto
+	draw_json_tree(const nlohmann::json &value) -> void {
+		for (const auto &[key, field] : value.items()) {
+			if (field.is_object()) {
+				if (ImGui::TreeNode(key.c_str())) {
+					draw_json_tree(field);
+					ImGui::TreePop();
+				}
+
+				continue;
+			}
+
+			auto text = field.is_string() ? field.get<std::string>() : field.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+			if (text.size() > 160) {
+				text = text.substr(0, 160) + "...";
+			}
+
+			ImGui::LabelText(key.c_str(), "%s", text.c_str());
+		}
+	}
+
+	static auto
+	DrawNodeDetails(const nlohmann::json &state, const nlohmann::json &arriving) -> void {
+		const auto component = get<uint32_t>(state, "component", 0);
+		ImGui::Text("%s  %u", get<std::string>(state, "class", "").c_str(), component);
+		ImGui::TextDisabled("actor %u, uid %s, graph %s, zone %s", get<uint32_t>(state, "actor", 0), get<std::string>(state, "uid", "").c_str(), get<std::string>(state, "graph_uid", "").c_str(), get<std::string>(state, "zone", "").c_str());
+
+		// the scan answers for the node it was started on, which may be the last one
+		const auto scanned = get<uint32_t>(arriving, "component", 0) == component;
+		const auto &inputs = scanned ? member(arriving, "inputs") : member(nlohmann::json {}, "inputs");
+		if (scanned) {
+			ImGui::SeparatorText(std::format("Inputs  {} arriving, {} found{}", get<int>(state, "connections_in", 0), inputs.size(), get<bool>(arriving, "inputs_truncated", false) ? ", scan cut short" : "").c_str());
+		} else {
+			ImGui::SeparatorText(std::format("Inputs  {} arriving, scanning...", get<int>(state, "connections_in", 0)).c_str());
+		}
+
+		constexpr auto TABLE_FLAGS = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp;
+		auto row = 0;
+		if (!inputs.empty() && ImGui::BeginTable("node_inputs", 4, TABLE_FLAGS)) {
+			ImGui::TableSetupColumn("plug");
+			ImGui::TableSetupColumn("from");
+			ImGui::TableSetupColumn("its output");
+			ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableHeadersRow();
+			for (const auto &input : inputs) {
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(plug_label(input, "plug").c_str());
+				ImGui::TableNextColumn();
+				draw_node_link(member(input, "from"), row);
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(plug_label(input, "from_plug").c_str());
+				ImGui::TableNextColumn();
+				if (ImGui::SmallButton(std::format("Fire##in{}", row).c_str())) {
+					fire_plug(component, get<std::string>(input, "plug", ""));
+				}
+
+				++row;
+			}
+
+			ImGui::EndTable();
+		}
+
+		const auto &outputs = member(state, "outputs");
+		ImGui::SeparatorText(std::format("Outputs  {}", outputs.size()).c_str());
+		if (!outputs.empty() && ImGui::BeginTable("node_outputs", 3, TABLE_FLAGS)) {
+			ImGui::TableSetupColumn("plug");
+			ImGui::TableSetupColumn("to");
+			ImGui::TableSetupColumn("its input");
+			ImGui::TableHeadersRow();
+			for (const auto &output : outputs) {
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(plug_label(output, "plug").c_str());
+				ImGui::TableNextColumn();
+				draw_node_link(member(output, "to"), row++);
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(plug_label(output, "to_plug").c_str());
+			}
+
+			ImGui::EndTable();
+		}
+
+		const auto &vars = member(state, "vars");
+		ImGui::SeparatorText(std::format("Vars  {}", vars.size()).c_str());
+		if (!vars.empty() && ImGui::BeginTable("node_vars", 4, TABLE_FLAGS)) {
+			ImGui::TableSetupColumn("plug");
+			ImGui::TableSetupColumn("type");
+			ImGui::TableSetupColumn("value");
+			ImGui::TableSetupColumn("global");
+			ImGui::TableHeadersRow();
+			for (const auto &var : vars) {
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(plug_label(var, "plug").c_str());
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(get<std::string>(var, "type", "").c_str());
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(var_text(var).c_str());
+				if (get<bool>(var, "dynamic", false)) {
+					ImGui::SameLine();
+					ImGui::TextDisabled("(engine driven)");
+				}
+
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(get<std::string>(var, "name", "").c_str());
+			}
+
+			ImGui::EndTable();
+		}
+
+		if (const auto it = state.find("properties"); it != state.end() && it->is_object()) {
+			ImGui::SeparatorText("Properties");
+			draw_json_tree(*it);
+		}
+	}
+
+	auto
+	DrawScriptNodes() -> void {
+		static std::string filter;
+
+		const auto entered = ImGui::InputTextWithHint("##node_filter", "node class contains, empty for all", &filter, ImGuiInputTextFlags_EnterReturnsTrue);
+		ImGui::SameLine();
+		if (ImGui::Button("List") || entered) {
+			invalidate(g_node_list);
+		}
+
+		refresh(g_node_list, [filter = filter] {
+			g_node_deadline = GetTickCount64() + 250;
+			return script_signal::nodes(filter.c_str(), 10000, node_scan_expired);
+		}, ON_DEMAND);
+
+		{
+			std::lock_guard guard { g_node_list.lock };
+			const auto &list = member(g_node_list.state, "nodes");
+			ImGui::SameLine();
+			ImGui::TextDisabled("%zu nodes%s, %zu plug names known", list.size(), get<bool>(g_node_list.state, "truncated", false) ? " (cut short)" : "", script_signal::plug_name_count());
+
+			if (ImGui::BeginChild("node_list", ImVec2(320, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX)) {
+				ImGuiListClipper clipper;
+				clipper.Begin(static_cast<int>(list.size()));
+				while (clipper.Step()) {
+					for (auto row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+						const auto component = get<uint32_t>(list[row], "component", 0);
+						const auto label = std::format("{}  {}##{}", get<std::string>(list[row], "class", ""), component, row);
+						if (ImGui::Selectable(label.c_str(), g_node_selected == component)) {
+							g_node_history.clear();
+							g_node_selected = 0;
+							select_node(component);
+						}
+					}
+				}
+			}
+
+			ImGui::EndChild();
+		}
+
+		ImGui::SameLine();
+
+		if (!ImGui::BeginChild("node_details", ImVec2(0, 0))) {
+			ImGui::EndChild();
+			return;
+		}
+
+		if (g_node_selected == 0) {
+			ImGui::TextDisabled("select a node for its wiring. plug_names.txt in the game folder names more plugs");
+			ImGui::EndChild();
+			return;
+		}
+
+		ImGui::BeginDisabled(g_node_history.empty());
+		if (ImGui::Button("Back") && !g_node_history.empty()) {
+			g_node_selected = g_node_history.back();
+			g_node_history.pop_back();
+			invalidate(g_node);
+		}
+
+		ImGui::EndDisabled();
+		ImGui::SameLine();
+		if (ImGui::Button("Refresh")) {
+			invalidate(g_node);
+			invalidate(g_node_inputs);
+		}
+
+		// any input plug, wired or not: the node only reacts to the ones it knows
+		static std::string plug;
+		ImGui::SameLine();
+		ImGui::SetNextItemWidth(220);
+		const auto fire_entered = ImGui::InputTextWithHint("##fire_plug", "input plug name or 0xhash", &plug, ImGuiInputTextFlags_EnterReturnsTrue);
+		ImGui::SameLine();
+		if ((ImGui::Button("Fire") || fire_entered) && !plug.empty()) {
+			fire_plug(g_node_selected, plug);
+		}
+
+		draw_message(g_node);
+
+		refresh(g_node, [selected = g_node_selected] {
+			nlohmann::json state;
+			const char *reason = nullptr;
+			if (!script_signal::inspect(selected, g_node_scratch, false, nullptr, &reason)) {
+				state["component"] = selected;
+				state["error"] = why(reason);
+				return state;
+			}
+
+			return script_signal::to_json(g_node_scratch);
+		}, 1000);
+
+		refresh(g_node_inputs, [selected = g_node_selected] {
+			nlohmann::json state;
+			state["component"] = selected;
+			g_node_deadline = GetTickCount64() + 100;
+			if (script_signal::inspect(selected, g_node_scratch, true, node_scan_expired, nullptr)) {
+				const auto node = script_signal::to_json(g_node_scratch);
+				state["inputs"] = node["inputs"];
+				state["inputs_truncated"] = node["inputs_truncated"];
+			}
+
+			return state;
+		}, ON_DEMAND);
+
+		const auto arriving = snapshot(g_node_inputs);
+		{
+			std::lock_guard guard { g_node.lock };
+			const auto &state = g_node.state;
+			if (get<uint32_t>(state, "component", 0) != g_node_selected) {
+				ImGui::TextDisabled("reading...");
+			} else if (const auto error = get<std::string>(state, "error", ""); !error.empty()) {
+				ImGui::TextDisabled("%s", error.c_str());
+			} else {
+				DrawNodeDetails(state, arriving);
 			}
 		}
 

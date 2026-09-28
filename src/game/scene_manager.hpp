@@ -7,6 +7,7 @@
 #include <cstdint>
 
 #include "actor.hpp"
+#include "script.hpp"
 
 namespace rivet_hook::game {
 #pragma pack(push, 1)
@@ -61,6 +62,13 @@ namespace rivet_hook::game {
 		uint8_t unknown6[0x10];
 		int32_t actorGroupCount;
 		int32_t actorGroupMax;
+		uint8_t unknown7[0x68];
+		// level script variables, addressed by { u16 index, u16 generation }
+		ScriptVar *scriptVars;
+		ScriptVar *scriptVarFreeHead;
+		ScriptVar *scriptVarFreeTail;
+		int32_t scriptVarCount;
+		int32_t scriptVarMax;
 
 		__forceinline auto
 		ResolveComponent(const EngineHandle handle) const -> Component* {
@@ -119,6 +127,8 @@ namespace rivet_hook::game {
 	static_assert(offsetof(SceneManager, actorGroups) == 0x7518, "SceneManager actorGroups offset is not 0x7518");
 	static_assert(offsetof(SceneManager, actorGroupCount) == 0x7530, "SceneManager actorGroupCount offset is not 0x7530");
 	static_assert(offsetof(SceneManager, actorGroupMax) == 0x7534, "SceneManager actorGroupMax offset is not 0x7534");
+	static_assert(offsetof(SceneManager, scriptVars) == 0x75a0, "SceneManager scriptVars offset is not 0x75a0");
+	static_assert(offsetof(SceneManager, scriptVarMax) == 0x75bc, "SceneManager scriptVarMax offset is not 0x75bc");
 
 #pragma pack(pop)
 } // namespace rivet_hook::game

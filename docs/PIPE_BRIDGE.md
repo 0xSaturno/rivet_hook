@@ -155,10 +155,15 @@ and `rivet.config_set`. See [LUA_SCRIPTING.md](LUA_SCRIPTING.md#configs).
 
 ```bash
 python tools/rivetctl.py script.nodes Spawner
+python tools/rivetctl.py script.node 3148523
+python tools/rivetctl.py script.signal 3148523 Start
 python tools/rivetctl.py script.signal 2113000 SpawnerAction Start
 ```
 
-See [LUA_SCRIPTING.md](LUA_SCRIPTING.md#level-scripts).
+`script.nodes [filter] [limit]` lists nodes with their `component` handle,
+`script.node <component>` is `rivet.script_node`, and `script.signal` takes
+either a component and a plug or an actor, a class and a plug. See
+[LUA_SCRIPTING.md](LUA_SCRIPTING.md#level-scripts).
 
 ## Wire format
 

@@ -433,27 +433,62 @@ show. Nothing is saved; the next time the config loads it is the authored one.
 
 | | |
 |---|---|
-| `rivet.script_nodes([filter], [limit])` | loaded script nodes as `{ actor, uid, class }`, classes containing `filter` |
-| `rivet.signal(actor, class, plug, [nth])` | fire an input plug on a script node |
+| `rivet.script_nodes([filter], [limit])` | loaded script nodes as `{ component, actor, uid, class }`, classes containing `filter` |
+| `rivet.script_node(component, [inputs])` | one node's wiring and vars, or `nil` and the reason |
+| `rivet.signal(component, plug)` | fire an input plug on a script node |
+| `rivet.signal(actor, class, plug, [nth])` | the same, finding the node by its actor and class |
 | `rivet.hash(text)` | the engine's 32 bit string hash |
 
 A zone's level scripts are graphs of script nodes wired together by plugs:
 spawner waves, doors, cinematics, objectives. Every node is a component on an
-actor of its own, and those actors have no scene object, so `rivet.actors` and
+actor without a scene object, most on an actor of their own and a few node
+types packed onto one shared actor, so `rivet.actors` and
 `rivet.find_component` never list them; `script_nodes` does. A node's `uid` is
-its authored id and is the same every launch, so `rivet.find_uid(uid)` finds it
-again after a reload.
+its authored id and is the same every launch, so matching it in `script_nodes`
+finds the node again after a reload (for a node with an actor of its own,
+`rivet.find_uid(uid)` finds that actor too). A few uids show up twice, on
+identical nodes of two copies of the same graph loaded at once. Its `component` handle is what
+`script_node` and `signal` take, and changes every load.
 
 `signal` queues the plug like the zone's own wiring would, and the node runs it
 later in the same frame. `plug` is the plug's name (`"Start"`, `"In"`,
 `"Activate"`…) or its hash as `0x` text. `nth` picks among several nodes of the
-same class on one actor, which is rare.
+same class on one actor. Only script nodes can be signalled; anything else is
+refused.
+
+`script_node` answers:
+
+| key | |
+|---|---|
+| `component`, `actor`, `class`, `uid` | the node |
+| `graph_uid` | the graph node it was built from, shared by every copy of a subgraph |
+| `zone` | asset id of the zone that loaded it |
+| `outputs` | `{ plug, to = { component, actor, class }, to_plug }` per connection; one plug can fan out to several |
+| `inputs` | the connections arriving, `{ plug, from = {...}, from_plug }`, found by scanning every loaded node (~16ms with 10k loaded); `inputs = false` skips the scan and leaves this out |
+| `connections_in` | how many connections the node itself counts arriving |
+| `vars` | `{ plug, var, live, type, value, dynamic, name }` per variable wired to it |
+
+The engine keeps plugs as hashes only, so every plug comes with a `*_name` when
+the name is known: a short built-in list of generic ones (`In`, `Out`, `Start`,
+`Done`…), plus any names in `plug_names.txt` next to the game exe, one per line
+(the last word of a line counts, `#` starts a comment). A node's input plugs
+are not stored on the node, only on its senders, so an input nothing is wired
+to is not listed but can still be fired. Var `type` is `bool`, `float`,
+`vector`, `string` or `actors`; an `actors` value is a table of actor handles
+with `group`, `count` and `uid`. `dynamic` marks engine driven globals, whose
+stored value can lag behind what a node reads. Only globals have a `name`.
 
 ```lua
 for _, node in ipairs(rivet.script_nodes("Spawner")) do
-  rivet.log(node.class, node.actor, node.uid)
+  local info = rivet.script_node(node.component)
+  for _, out in ipairs(info.outputs) do
+    rivet.log(node.class, out.plug_name or out.plug, "->", out.to.class, out.to_plug_name or out.to_plug)
+  end
 end
 ```
+
+The overlay's Nodes tab is the same thing interactively: pick a node, click a
+neighbour to follow the wiring, and fire any input plug by hand.
 
 `rivet.hash` is the hash plug, event and class names all go through: a
 reflected CRC32 seeded with `0xEDB88320` and no final xor.

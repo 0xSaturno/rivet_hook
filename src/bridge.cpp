@@ -1720,11 +1720,58 @@ namespace rivet_hook::bridge {
 		return ok(script_signal::nodes(args.size() > 1 ? args[1].c_str() : "", parse_limit(args, 2, 200), scan_expired));
 	}
 
-	// script.signal <actor> <component class> <plug> [nth], nth 1 based
+	// script.node <component>: a node's outputs and where they go, its vars, and
+	// the connections arriving at it
+	static auto
+	cmd_script_node(const std::vector<std::string> &args) -> std::string {
+		if (args.size() < 2) {
+			return error("usage: script.node <component>");
+		}
+
+		EngineHandle component {};
+		if (!parse_handle(args[1], component)) {
+			return error("could not parse the component handle");
+		}
+
+		g_scan_deadline = GetTickCount64() + 250;
+
+		// too large for the stack, and the pump is the only caller
+		static script_signal::Node node;
+		const char *reason = nullptr;
+		if (!script_signal::inspect(component.value, node, true, scan_expired, &reason)) {
+			return error(reason != nullptr ? reason : "refused");
+		}
+
+		return ok(script_signal::to_json(node));
+	}
+
+	// script.signal <component> <plug>, or <actor> <component class> <plug> [nth]
+	// with nth 1 based
 	static auto
 	cmd_script_signal(const std::vector<std::string> &args) -> std::string {
+		if (args.size() == 3) {
+			EngineHandle component {};
+			if (!parse_handle(args[1], component)) {
+				return error("could not parse the component handle");
+			}
+
+			const auto plug = script_signal::plug_hash(args[2].c_str());
+			const char *reason = nullptr;
+			if (!script_signal::send(component.value, plug, &reason)) {
+				return error(reason != nullptr ? reason : "refused");
+			}
+
+			char plug_text[16];
+			_snprintf_s(plug_text, sizeof(plug_text), _TRUNCATE, "0x%08x", plug);
+
+			nlohmann::json result;
+			result["component"] = component.value;
+			result["plug"] = plug_text;
+			return ok(result);
+		}
+
 		if (args.size() < 4) {
-			return error("usage: script.signal <actor> <component class> <plug> [nth]");
+			return error("usage: script.signal <component> <plug> | <actor> <component class> <plug> [nth]");
 		}
 
 		EngineHandle actor {};
@@ -1864,6 +1911,10 @@ namespace rivet_hook::bridge {
 
 		if (command == "script.nodes") {
 			return cmd_script_nodes(args);
+		}
+
+		if (command == "script.node") {
+			return cmd_script_node(args);
 		}
 
 		if (command == "config.list" || command == "config.get" || command == "config.set") {
@@ -2068,7 +2119,7 @@ namespace rivet_hook::bridge {
 		if (args[0] == "help") {
 			nlohmann::json result;
 			result["commands"] = nlohmann::json::array_t {
-				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]", "hud.notify <text>", "hud.message <type> <seconds> <text>", "vanity.equip <bundle>", "vanity.owns <bundle>", "hero.look [.actor or .model path] [anims]", "hero.models [filter]", "hero.play_as <ratchet|clank|rivet|kit>", "hero.apply_on_launch <on|off>","hero.restore", "config.list [type] [limit]", "config.get <config>", "config.set <config> <field.path> <value>", "script.nodes [filter] [limit]", "script.signal <actor> <component class> <plug> [nth]"
+				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]", "hud.notify <text>", "hud.message <type> <seconds> <text>", "vanity.equip <bundle>", "vanity.owns <bundle>", "hero.look [.actor or .model path] [anims]", "hero.models [filter]", "hero.play_as <ratchet|clank|rivet|kit>", "hero.apply_on_launch <on|off>","hero.restore", "config.list [type] [limit]", "config.get <config>", "config.set <config> <field.path> <value>", "script.nodes [filter] [limit]", "script.node <component>", "script.signal <component> <plug>", "script.signal <actor> <component class> <plug> [nth]"
 			};
 			return ok(result);
 		}

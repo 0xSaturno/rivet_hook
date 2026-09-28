@@ -27,6 +27,11 @@ namespace rivet_hook::overlay {
 	auto
 	DrawConfigs() -> void;
 
+	// level script nodes: their wiring and vars, followed node to node, and
+	// input plugs fired by hand
+	auto
+	DrawScriptNodes() -> void;
+
 	// lua status, reload, and a one line exec
 	auto
 	DrawScripts() -> void;

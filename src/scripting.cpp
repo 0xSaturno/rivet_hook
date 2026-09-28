@@ -1848,8 +1848,8 @@ namespace rivet_hook::scripting {
 		return 1;
 	}
 
-	// rivet.script_nodes([filter], [limit]) -> { { actor, uid, class }, ... } of
-	// the level script nodes loaded now whose class contains filter
+	// rivet.script_nodes([filter], [limit]) -> { { component, actor, uid, class },
+	// ... } of the level script nodes loaded now whose class contains filter
 	static auto
 	l_script_nodes(lua_State *L) -> int {
 		constexpr int32_t MAX_NODES = 512;
@@ -1858,6 +1858,7 @@ namespace rivet_hook::scripting {
 
 		// copied out of the json before anything below can raise
 		struct Node {
+			uint32_t component;
 			uint32_t actor;
 			char uid[17];
 			char name[64];
@@ -1868,6 +1869,7 @@ namespace rivet_hook::scripting {
 		{
 			const auto listing = script_signal::nodes(filter, limit < MAX_NODES ? limit : MAX_NODES, budget_expired);
 			for (const auto &node : listing["nodes"]) {
+				found[count].component = node["component"].get<uint32_t>();
 				found[count].actor = node["actor"].get<uint32_t>();
 				_snprintf_s(found[count].uid, sizeof(found[count].uid), _TRUNCATE, "%s", node["uid"].get<std::string>().c_str());
 				_snprintf_s(found[count].name, sizeof(found[count].name), _TRUNCATE, "%s", node["class"].get<std::string>().c_str());
@@ -1877,7 +1879,9 @@ namespace rivet_hook::scripting {
 
 		lua_createtable(L, count, 0);
 		for (int32_t i = 0; i < count; ++i) {
-			lua_createtable(L, 0, 3);
+			lua_createtable(L, 0, 4);
+			lua_pushinteger(L, found[i].component);
+			lua_setfield(L, -2, "component");
 			lua_pushinteger(L, found[i].actor);
 			lua_setfield(L, -2, "actor");
 			lua_pushstring(L, found[i].uid);
@@ -1890,11 +1894,192 @@ namespace rivet_hook::scripting {
 		return 1;
 	}
 
+	static auto
+	push_plug(lua_State *L, const char *key, const uint32_t plug) -> void {
+		lua_pushinteger(L, plug);
+		lua_setfield(L, -2, key);
+
+		char name_key[32];
+		_snprintf_s(name_key, sizeof(name_key), _TRUNCATE, "%s_name", key);
+		if (const auto *name = script_signal::plug_name(plug); name != nullptr) {
+			lua_pushstring(L, name);
+			lua_setfield(L, -2, name_key);
+		}
+	}
+
+	static auto
+	push_node_ref(lua_State *L, const char *key, const script_signal::NodeRef &ref) -> void {
+		lua_createtable(L, 0, 3);
+		lua_pushinteger(L, ref.component);
+		lua_setfield(L, -2, "component");
+		lua_pushinteger(L, ref.actor);
+		lua_setfield(L, -2, "actor");
+		if (ref.name[0] != '\0') {
+			lua_pushstring(L, ref.name);
+			lua_setfield(L, -2, "class");
+		}
+
+		lua_setfield(L, -2, key);
+	}
+
+	static auto
+	push_var_value(lua_State *L, const script_signal::NodeVar &var) -> void {
+		switch (var.type) {
+			case ScriptVarType::Bool:
+				lua_pushboolean(L, var.as_bool);
+				break;
+			case ScriptVarType::Float:
+				lua_pushnumber(L, var.numbers[0]);
+				break;
+			case ScriptVarType::Vector:
+				lua_createtable(L, 3, 0);
+				for (auto i = 0; i < 3; ++i) {
+					lua_pushnumber(L, var.numbers[i]);
+					lua_rawseti(L, -2, i + 1);
+				}
+				break;
+			case ScriptVarType::String:
+				lua_pushstring(L, var.text);
+				break;
+			case ScriptVarType::Actors: {
+				const auto shown = var.actor_count < script_signal::MAX_VAR_ACTORS ? var.actor_count : script_signal::MAX_VAR_ACTORS;
+				lua_createtable(L, shown, 3);
+				for (auto i = 0; i < shown; ++i) {
+					lua_pushinteger(L, var.actors[i]);
+					lua_rawseti(L, -2, i + 1);
+				}
+
+				lua_pushboolean(L, var.group);
+				lua_setfield(L, -2, "group");
+				lua_pushinteger(L, var.actor_count);
+				lua_setfield(L, -2, "count");
+				char uid[24];
+				_snprintf_s(uid, sizeof(uid), _TRUNCATE, "%016llx", var.actor_uid);
+				lua_pushstring(L, uid);
+				lua_setfield(L, -2, "uid");
+				break;
+			}
+			default:
+				lua_pushnil(L);
+				break;
+		}
+	}
+
+	// rivet.script_node(component, [inputs]) -> { component, actor, class, uid,
+	// graph_uid, zone, connections_in, inputs, outputs, vars, inputs_truncated },
+	// or nil and the reason. inputs are the connections arriving from other
+	// nodes, found by walking every node, which inputs = false skips; outputs
+	// where this node's plugs go, vars the variables wired to it and their values.
+	// plugs are hashes, with a *_name next to them when the name is known.
+	static auto
+	l_script_node(lua_State *L) -> int {
+		const auto component = static_cast<uint32_t>(luaL_checkinteger(L, 1));
+		const auto inputs = lua_isnoneornil(L, 2) || lua_toboolean(L, 2) != 0;
+
+		// plain data, so nothing is left to unwind if a push below raises
+		static script_signal::Node node;
+		const char *reason = "refused";
+		if (!script_signal::inspect(component, node, inputs, budget_expired, &reason)) {
+			lua_pushnil(L);
+			lua_pushstring(L, reason);
+			return 2;
+		}
+
+		char text[24];
+		lua_createtable(L, 0, 11);
+		lua_pushinteger(L, node.self.component);
+		lua_setfield(L, -2, "component");
+		lua_pushinteger(L, node.self.actor);
+		lua_setfield(L, -2, "actor");
+		lua_pushstring(L, node.self.name);
+		lua_setfield(L, -2, "class");
+		_snprintf_s(text, sizeof(text), _TRUNCATE, "%016llx", node.uid);
+		lua_pushstring(L, text);
+		lua_setfield(L, -2, "uid");
+		_snprintf_s(text, sizeof(text), _TRUNCATE, "%016llx", node.graph_uid);
+		lua_pushstring(L, text);
+		lua_setfield(L, -2, "graph_uid");
+		_snprintf_s(text, sizeof(text), _TRUNCATE, "%016llx", node.zone);
+		lua_pushstring(L, text);
+		lua_setfield(L, -2, "zone");
+		lua_pushinteger(L, node.in_count);
+		lua_setfield(L, -2, "connections_in");
+		if (inputs) {
+			lua_pushboolean(L, node.inputs_truncated);
+			lua_setfield(L, -2, "inputs_truncated");
+
+			lua_createtable(L, node.input_count, 0);
+			for (auto i = 0; i < node.input_count; ++i) {
+				const auto &input = node.inputs[i];
+				lua_createtable(L, 0, 5);
+				push_plug(L, "plug", input.plug);
+				push_node_ref(L, "from", input.source);
+				push_plug(L, "from_plug", input.source_plug);
+				lua_rawseti(L, -2, i + 1);
+			}
+
+			lua_setfield(L, -2, "inputs");
+		}
+
+		lua_createtable(L, node.output_count, 0);
+		for (auto i = 0; i < node.output_count; ++i) {
+			const auto &output = node.outputs[i];
+			lua_createtable(L, 0, 5);
+			push_plug(L, "plug", output.plug);
+			push_node_ref(L, "to", output.target);
+			push_plug(L, "to_plug", output.target_plug);
+			lua_rawseti(L, -2, i + 1);
+		}
+
+		lua_setfield(L, -2, "outputs");
+
+		lua_createtable(L, node.var_count, 0);
+		for (auto i = 0; i < node.var_count; ++i) {
+			const auto &var = node.vars[i];
+			lua_createtable(L, 0, 8);
+			push_plug(L, "plug", var.plug);
+			lua_pushinteger(L, var.handle);
+			lua_setfield(L, -2, "var");
+			lua_pushboolean(L, var.live);
+			lua_setfield(L, -2, "live");
+			if (var.live) {
+				lua_pushstring(L, ScriptVarTypeName(var.type));
+				lua_setfield(L, -2, "type");
+				push_var_value(L, var);
+				lua_setfield(L, -2, "value");
+				lua_pushboolean(L, var.dynamic);
+				lua_setfield(L, -2, "dynamic");
+				if (var.name[0] != '\0') {
+					lua_pushstring(L, var.name);
+					lua_setfield(L, -2, "name");
+				}
+			}
+
+			lua_rawseti(L, -2, i + 1);
+		}
+
+		lua_setfield(L, -2, "vars");
+		return 1;
+	}
+
 	// rivet.signal(actor, component_class, plug, [nth]): fires an input plug on a
 	// level script node, the nth (1 based) component of that class on the actor.
 	// plug is the plug's name ("Start", "In", ...) or its hash as 0x hex text.
+	// rivet.signal(component, plug) fires it on a node component directly, as
+	// rivet.script_nodes lists them.
 	static auto
 	l_signal(lua_State *L) -> int {
+		if (lua_gettop(L) == 2) {
+			const auto component = static_cast<uint32_t>(luaL_checkinteger(L, 1));
+			const auto plug = script_signal::plug_hash(luaL_checkstring(L, 2));
+			const char *reason = "the signal was refused";
+			if (!script_signal::send(component, plug, &reason)) {
+				luaL_error(L, "%s", reason);
+			}
+
+			return 0;
+		}
+
 		const auto actor = static_cast<uint32_t>(luaL_checkinteger(L, 1));
 		const auto *component_class = luaL_checkstring(L, 2);
 		const auto plug = script_signal::plug_hash(luaL_checkstring(L, 3));
@@ -1964,6 +2149,7 @@ namespace rivet_hook::scripting {
 		{ "hash", l_hash },
 		{ "signal", l_signal },
 		{ "script_nodes", l_script_nodes },
+		{ "script_node", l_script_node },
 		{ nullptr, nullptr },
 	};
 
