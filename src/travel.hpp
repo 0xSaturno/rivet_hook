@@ -50,6 +50,33 @@ namespace rivet_hook::travel {
 	auto
 	go(const char *zone, char *message, size_t message_size, const char **reason) -> bool;
 
+	// the ship's travel, to any checkpoint: hands the ship's planet menu listener
+	// the same accept the menu would, with a planet tunnel (a CHK_TRANSITION_TO_
+	// checkpoint) and our destination. the ship's own script then takes off, flies
+	// the tunnel and lands on the destination. needs a ship nearby; the listener
+	// whose screen is nearest the hero is used. via names the tunnel; empty picks
+	// the one of the destination's planet. game thread only.
+	auto
+	fly(const char *destination, const char *via, char *message, size_t message_size, const char **reason) -> bool;
+
+	// a rift: the game's passive shift, the one that pulls the hero through a rift,
+	// through an airlock and out at the far end, landing them. borrows four of
+	// the rift portals loaded here: one opens next to the hero and pulls them in,
+	// one near another rift stands in for the airlock, and the last is moved to
+	// the target. target is a checkpoint name, or x y z with checkpoint empty. the
+	// borrowed portals are put back once the shift is over, deactivated.
+	// game thread only.
+	auto
+	rift(const char *checkpoint, const float *position, char *message, size_t message_size, const char **reason) -> bool;
+
+	// puts borrowed rift portals back once the shift that used them is over
+	auto
+	pump() -> void;
+
+	// the planet tunnels the level has, the CHK_TRANSITION_TO_ checkpoints
+	auto
+	tunnels() -> nlohmann::json;
+
 	// loads an overlay region on top of whatever is loaded, or unloads one. region
 	// is its index, its path, or a fragment only one overlay path contains. game
 	// thread only.

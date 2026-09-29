@@ -5,9 +5,14 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "travel.hpp"
@@ -18,6 +23,7 @@
 #include "game_thread.hpp"
 #include "runtime.hpp"
 #include "scene_query.hpp"
+#include "script_signal.hpp"
 #include "signature.hpp"
 
 using namespace rivet_hook::game;
@@ -47,6 +53,116 @@ namespace rivet_hook::travel {
 	// optional, for telling loaded and story driven overlays apart
 	static uint32_t g_overlay_manager_offset = 0;
 	static const CustomOverlaySystem *g_custom_overlays = nullptr;
+	// where the planet menu leaves the tunnel and destination checkpoint names
+	static char *g_tunnel_name = nullptr;
+	static char *g_destination_name = nullptr;
+	constexpr const char *TUNNEL_PREFIX = "CHK_TRANSITION_TO_";
+
+	// ScriptPlugs::SetVarString / SendSignal, as the planet menu listener calls them
+	using set_var_string_t = void (*)(void *plugs, const char *value, uint32_t var);
+	using send_signal_t = bool (*)(void *plugs, uint32_t output);
+	static set_var_string_t g_set_var_string = nullptr;
+	static send_signal_t g_send_signal = nullptr;
+
+	// the ship's listener: its vars for the two names, its accept output, and the
+	// var holding the ship's menu screen actor, for picking the nearest ship
+	constexpr const char *SHIP_LISTENER = "OnPlanetMenuRTTEventAction";
+	constexpr uint32_t SHIP_VAR_TUNNEL = 0x136b3eab;	 // INTERPLANETARY_SHIP_SELECTED
+	constexpr uint32_t SHIP_VAR_DESTINATION = 0x41f2d10d; // DESTINATION_SHIP_SELECTED
+	constexpr uint32_t SHIP_VAR_SCREEN = 0x7245fd51;
+	constexpr uint32_t SHIP_OUT_ACCEPT = 0x482fae17;
+
+	// the passive shift controller's parameters: four Portal component handles,
+	// the checkpoint the airlock loads, and whether to restore the old one after.
+	// the controller copies the struct whole, so it is padded with zeros past
+	// what is known
+	struct ShiftParams {
+		uint32_t startSource = 0;
+		uint32_t startDest = 0;
+		uint32_t endSource = 0;
+		uint32_t endDest = 0;
+		uint32_t checkpoint = 0;
+		uint8_t restoreCheckpoint = 0;
+		uint8_t padding[0x2b] {};
+	};
+
+	// SimpleArray<ActorHandle>
+	struct ActorArray {
+		const uint32_t *data;
+		int32_t count;
+		int32_t capacity;
+	};
+
+	using shift_set_params_t = bool (*)(void *controller, const ShiftParams *params, const ActorArray *actors);
+	using shift_start_t = bool (*)(void *controller, const uint32_t *triggering_actor);
+	using shift_stop_t = void (*)(void *controller, const uint32_t *triggering_actor);
+	static const uint32_t *g_shift_controller = nullptr; // a component handle
+	static shift_set_params_t g_shift_set_params = nullptr;
+	static shift_start_t g_shift_start = nullptr;
+	static shift_stop_t g_shift_stop = nullptr;
+
+	// the rift's own portals: spawned from the game's passive shift portal actor,
+	// loaded on demand, so a rift needs no portals of the level's
+	using spawn_actor_t = Actor *(*)(uint64_t asset, void *owner, const float (*matrix)[4]);
+	using load_actor_asset_t = Asset *(*)(void *manager, const char *path, Asset *loaded_from, const char *load_info);
+	static spawn_actor_t g_spawn_actor = nullptr;
+	// Scene::SetActorUid (actor, uid). the hero's rift state names its portal by
+	// uid, which only placed actors have, so spawned portals are given one. the
+	// spawn calls it at +0xC1 when it is handed an owner
+	using set_actor_uid_t = void (*)(Actor *actor, uint64_t uid);
+	static set_actor_uid_t g_set_actor_uid = nullptr;
+	constexpr uint32_t SPAWN_SET_UID_CALL = 0xC1;
+	// a uid in the form placed actors have, top bit set, which is looked up in the
+	// scene's uid map. the spawned form (bit 48) is looked up as a network id
+	// instead and would find nothing
+	constexpr uint64_t RIFT_PORTAL_UID = 0xEE5F7EED00007F00ull;
+	static load_actor_asset_t g_load_actor_asset = nullptr;
+	static void *g_actor_assets = nullptr;
+	// two assets: the actors of one asset share their prius, and the two portals
+	// that follow the hero need other switches than the two that stay put
+	constexpr const char *RIFT_PORTAL_ASSETS[2] = {
+		"environment/global/test/test_gbl_portal/test_gbl_portal_passive_shift.actor", // A and C
+		"environment/global/test/test_gbl_portal/test_gbl_portal.actor",				 // B and D
+	};
+	static Asset *g_rift_assets[2] {};
+	static uint32_t g_rift_portals[4] {};
+	// how long the game's own rift portals take to open
+	constexpr float RIFT_PORTAL_OPEN_TIME = 0.5f;
+
+	// a rift waiting for its portal asset to load
+	struct PendingRift {
+		bool waiting = false;
+		char checkpoint[0x80] {};
+		bool at_position = false;
+		float position[3] {};
+		uint64_t since = 0;
+	};
+
+	static PendingRift g_pending;
+	static bool g_rift_asset_failed = false; // gave up on it for this session
+	constexpr uint64_t RIFT_ASSET_TIMEOUT_MS = 30000;
+
+	// a portal lent to a rift: where it was, and the PortalPassiveShift switches
+	// changed on it (-1 when untouched)
+	struct BorrowedPortal {
+		uint32_t actor = 0;
+		float matrix[4][4] {};
+		int8_t followPlayer = -1;
+		int8_t gravityWell = -1;
+	};
+
+	static BorrowedPortal g_borrowed[4];
+	static int32_t g_borrowed_count = 0;
+	static bool g_rift_busy_seen = false;
+	static uint64_t g_rift_started = 0;
+	static uint8_t g_rift_state = 0;
+	// where the game's own passive shifts put the hero while the far end loads,
+	// gliding along +z: far off in the sky, so nothing is in the way
+	constexpr float AIRLOCK_POSITION[3] = { -2908.0f, 3052.0f, 2060.0f };
+	// how high over the target the far end opens
+	constexpr float RIFT_EXIT_HEIGHT = 1.5f;
+	constexpr uint64_t RIFT_TIMEOUT_MS = 60000;
+	constexpr const char *SHIFT_STATE_NAMES[] = { "idle", "start transition", "loading", "end transition" };
 	static const char *g_unavailable = "travel was not initialized";
 
 	auto
@@ -82,6 +198,54 @@ namespace rivet_hook::travel {
 			}
 
 			g_custom_overlays = static_cast<const CustomOverlaySystem *>(load_rel_var(find_address(CUSTOM_OVERLAY_SYSTEM_SIGNATURE), CUSTOM_OVERLAY_SYSTEM_ADDRESS));
+		}
+
+		// the two readers load buffers 0x100 apart, the tunnel's first
+		const auto readers = find_addresses(PLANET_MENU_CHECKPOINT_READ_SIGNATURE);
+		if (readers.size() == 2) {
+			auto *first = static_cast<char *>(load_rel_var(readers[0], PLANET_MENU_CHECKPOINT_ADDRESS));
+			auto *second = static_cast<char *>(load_rel_var(readers[1], PLANET_MENU_CHECKPOINT_ADDRESS));
+			if (first != nullptr && second != nullptr && first > second) {
+				std::swap(first, second);
+			}
+
+			if (first != nullptr && second == first + PLANET_MENU_CHECKPOINT_SIZE) {
+				g_tunnel_name = first;
+				g_destination_name = second;
+			}
+		}
+
+		if (const auto handler = find_address(PLANET_MENU_ACCEPT_HANDLER_SIGNATURE, 2, 0); handler != 0) {
+			g_set_var_string = reinterpret_cast<set_var_string_t>(load_rel_var(handler, PLANET_MENU_SET_VAR_STRING_ADDRESS));
+			g_send_signal = reinterpret_cast<send_signal_t>(load_rel_var(handler, PLANET_MENU_SEND_SIGNAL_ADDRESS));
+		}
+
+		if (g_destination_name == nullptr || g_set_var_string == nullptr || g_send_signal == nullptr) {
+			g_destination_name = nullptr;
+			g_output << "[travel] the planet menu pieces were not found, rivet.fly is unavailable\n";
+		}
+
+		const auto set_site = find_address(PASSIVE_SHIFT_SET_PARAMS_SIGNATURE);
+		const auto start_site = find_address(PASSIVE_SHIFT_START_SIGNATURE);
+		g_shift_controller = static_cast<const uint32_t *>(load_rel_var(set_site, PASSIVE_SHIFT_CONTROLLER_ADDRESS));
+		g_shift_set_params = reinterpret_cast<shift_set_params_t>(load_rel_var(set_site, PASSIVE_SHIFT_SET_PARAMS_ADDRESS));
+		g_shift_start = reinterpret_cast<shift_start_t>(load_rel_var(start_site, PASSIVE_SHIFT_START_ADDRESS));
+		g_shift_stop = reinterpret_cast<shift_stop_t>(load_rel_var(find_address(PASSIVE_SHIFT_STOP_SIGNATURE), PASSIVE_SHIFT_STOP_ADDRESS));
+		g_spawn_actor = reinterpret_cast<spawn_actor_t>(find_address(SPAWN_ACTOR_FROM_ASSET_SIGNATURE));
+		g_load_actor_asset = reinterpret_cast<load_actor_asset_t>(find_address(LOAD_ACTOR_ASSET_SIGNATURE));
+		g_actor_assets = load_rel_var(find_address(ACTOR_ASSET_MANAGER_SIGNATURE), ACTOR_ASSET_MANAGER_ADDRESS);
+		if (g_spawn_actor != nullptr && reinterpret_cast<const uint8_t *>(g_spawn_actor)[SPAWN_SET_UID_CALL] == 0xE8) {
+			g_set_actor_uid = reinterpret_cast<set_actor_uid_t>(load_rel_var(reinterpret_cast<uintptr_t>(g_spawn_actor), SPAWN_SET_UID_CALL + 1));
+		}
+
+		if (g_spawn_actor == nullptr || g_load_actor_asset == nullptr || g_actor_assets == nullptr || g_set_actor_uid == nullptr) {
+			g_spawn_actor = nullptr;
+			g_output << "[travel] the actor spawn was not found, rifts borrow the level's portals\n";
+		}
+
+		if (g_shift_controller == nullptr || g_shift_set_params == nullptr || g_shift_start == nullptr || g_shift_stop == nullptr) {
+			g_shift_controller = nullptr;
+			g_output << "[travel] the passive shift controller was not found, rivet.rift is unavailable\n";
 		}
 
 		if (g_instance == nullptr || g_request_warp == nullptr) {
@@ -907,6 +1071,915 @@ namespace rivet_hook::travel {
 			default:
 				return fail(reason, "no checkpoint loads that zone's region, and it is not in an overlay");
 		}
+	}
+
+	// ---------------------------------------------------------------- tunnels --
+
+	// letters and digits only, lower case: "Nefarious_City (open world)" and
+	// "NEFARIOUS_CITY" both become nefariouscity...
+	static auto
+	squash(const char *text, char *out, const size_t size) -> void {
+		size_t n = 0;
+		for (; *text != '\0' && n + 1 < size; ++text) {
+			if (isalnum(static_cast<unsigned char>(*text)) != 0) {
+				out[n++] = static_cast<char>(tolower(static_cast<unsigned char>(*text)));
+			}
+		}
+
+		out[n] = '\0';
+	}
+
+	// the planet tunnel for a destination: the one whose planet the destination's
+	// area names ("savali" in "Savali (open world)", "zurk" for Zurkons and
+	// ZURKIES), else the first one
+	static auto
+	tunnel_for(const LevelAsset *asset, const CheckpointManager *table, const CheckpointData *destination) -> const CheckpointData * {
+		char area[0x80];
+		char area_key[0x80];
+		area_of(asset, destination->region, area, sizeof(area));
+		squash(area, area_key, sizeof(area_key));
+
+		const CheckpointData *first = nullptr;
+		const auto prefix = strlen(TUNNEL_PREFIX);
+		for (int32_t i = 0; i < table->count; ++i) {
+			char name[0x80];
+			if (!ddl::read_string(table->checkpoints[i].name, name, sizeof(name)) || strncmp(name, TUNNEL_PREFIX, prefix) != 0) {
+				continue;
+			}
+
+			if (first == nullptr) {
+				first = &table->checkpoints[i];
+			}
+
+			char planet[0x80];
+			squash(name + prefix, planet, sizeof(planet));
+			if (planet[0] != '\0' && (strstr(area_key, planet) != nullptr || (strlen(planet) >= 4 && strncmp(area_key, planet, 4) == 0))) {
+				return &table->checkpoints[i];
+			}
+		}
+
+		return first;
+	}
+
+	auto
+	tunnels() -> nlohmann::json {
+		nlohmann::json::array_t found;
+		const auto *table = manager(nullptr);
+		const auto prefix = strlen(TUNNEL_PREFIX);
+		for (int32_t i = 0; table != nullptr && i < table->count; ++i) {
+			char name[0x80];
+			if (ddl::read_string(table->checkpoints[i].name, name, sizeof(name)) && strncmp(name, TUNNEL_PREFIX, prefix) == 0) {
+				found.emplace_back(name);
+			}
+		}
+
+		return found;
+	}
+
+	// the world position of an actor's scene object, false when it has none
+	static auto
+	position_of(const uint32_t handle, float out[3]) -> bool {
+		const auto *actor = g_SceneManager != nullptr ? g_SceneManager->ResolveActor(EngineHandle { .value = handle }) : nullptr;
+		if (actor == nullptr || actor->object == nullptr || !ddl::is_readable(actor->object, sizeof(SceneObject))) {
+			return false;
+		}
+
+		for (auto i = 0; i < 3; ++i) {
+			out[i] = actor->object->transform_matrix[3][i];
+		}
+
+		return true;
+	}
+
+	// the actor a node's single actor var holds, 0 when unset or a group
+	static auto
+	var_actor(const ScriptPlugs *plugs, const uint32_t var) -> uint32_t {
+		if (plugs->varCount == 0 || plugs->varPlugs == nullptr || !ddl::is_readable(plugs->varPlugs, sizeof(ScriptVarPlug) * plugs->varCount)) {
+			return 0;
+		}
+
+		for (auto i = 0; i < plugs->varCount; ++i) {
+			const auto &plug = plugs->varPlugs[i];
+			if (plug.plug != var || plug.varGeneration == 0 || g_SceneManager->scriptVars == nullptr || plug.varIndex >= g_SceneManager->scriptVarMax) {
+				continue;
+			}
+
+			const auto *value = &g_SceneManager->scriptVars[plug.varIndex];
+			if (ddl::is_readable(value, sizeof(ScriptVar)) && value->generation == plug.varGeneration && value->type == ScriptVarType::Actors && (value->actors & SCRIPT_VAR_GROUP_BIT) == 0) {
+				return value->actors;
+			}
+		}
+
+		return 0;
+	}
+
+	// the ship's planet menu listener nearest the hero, by the ship screen actor
+	// it holds; the first one when none can be placed
+	static auto
+	ship_listener(const char **reason) -> const ScriptAction * {
+		float hero[3] {};
+		const auto have_hero = position_of(scene_query::hero(), hero);
+
+		const ScriptAction *best = nullptr;
+		auto best_distance = 0.0f;
+		const auto listing = script_signal::nodes(SHIP_LISTENER, 16, nullptr);
+		for (const auto &entry : listing["nodes"]) {
+			if (entry["class"] != SHIP_LISTENER) {
+				continue;
+			}
+
+			const auto handle = EngineHandle { .value = entry["component"].get<uint32_t>() };
+			const auto *component = g_SceneManager->ResolveComponent(handle);
+			if (component == nullptr || !ddl::is_readable(component, sizeof(ScriptAction)) || component->IsDestroyed()) {
+				continue;
+			}
+
+			const auto *node = reinterpret_cast<const ScriptAction *>(component);
+			if (node->plugs == nullptr || !ddl::is_readable(node->plugs, sizeof(ScriptPlugs))) {
+				continue;
+			}
+
+			float screen[3] {};
+			auto distance = 1e30f;
+			if (have_hero && position_of(var_actor(node->plugs, SHIP_VAR_SCREEN), screen)) {
+				distance = 0.0f;
+				for (auto i = 0; i < 3; ++i) {
+					distance += (screen[i] - hero[i]) * (screen[i] - hero[i]);
+				}
+			}
+
+			if (best == nullptr || distance < best_distance) {
+				best = node;
+				best_distance = distance;
+			}
+		}
+
+		if (best == nullptr) {
+			fail(reason, "no ship is loaded here: travel starts from a ship, as the planet menu does");
+		}
+
+		return best;
+	}
+
+	// the listener's own accept, on its own, so a fault is caught with nothing to
+	// unwind: the two vars the script reads, then the accept output
+	static auto
+	call_accept(void *plugs, const char *through, const char *target, bool *sent) -> bool {
+#ifdef _MSC_VER
+		__try {
+#endif
+			g_set_var_string(plugs, through, SHIP_VAR_TUNNEL);
+			g_set_var_string(plugs, target, SHIP_VAR_DESTINATION);
+			*sent = g_send_signal(plugs, SHIP_OUT_ACCEPT);
+			return true;
+#ifdef _MSC_VER
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			return false;
+		}
+#endif
+	}
+
+	auto
+	fly(const char *destination, const char *via, char *message, const size_t message_size, const char **reason) -> bool {
+		message[0] = '\0';
+		if (g_destination_name == nullptr) {
+			return fail(reason, "the planet menu pieces were not found");
+		}
+
+		if (!game_thread::on_game_thread()) {
+			return fail(reason, "travel can only start on the game thread, and it is not pumping (loading?)");
+		}
+
+		const auto *table = manager(reason);
+		const auto *asset = table != nullptr ? level(reason) : nullptr;
+		if (asset == nullptr) {
+			return false;
+		}
+
+		const auto *target = find_data(find(destination));
+		if (target == nullptr) {
+			return fail(reason, "the level has no destination checkpoint with that name or hash");
+		}
+
+		const CheckpointData *through = nullptr;
+		if (via != nullptr && via[0] != '\0') {
+			// "SAVALI" is short for CHK_TRANSITION_TO_SAVALI
+			char full[0x100];
+			_snprintf_s(full, sizeof(full), _TRUNCATE, "%s%s", _strnicmp(via, TUNNEL_PREFIX, strlen(TUNNEL_PREFIX)) == 0 ? "" : TUNNEL_PREFIX, via);
+			through = find_data(find(full));
+			if (through == nullptr) {
+				return fail(reason, "the level has no planet tunnel by that name");
+			}
+		} else {
+			through = tunnel_for(asset, table, target);
+			if (through == nullptr) {
+				return fail(reason, "the level has no planet tunnels");
+			}
+		}
+
+		char target_name[0x80];
+		char through_name[0x80];
+		if (!ddl::read_string(target->name, target_name, sizeof(target_name)) || !ddl::read_string(through->name, through_name, sizeof(through_name))) {
+			return fail(reason, "the checkpoint names are not readable");
+		}
+
+		if (!ddl::is_writable(g_tunnel_name, PLANET_MENU_CHECKPOINT_SIZE * 2)) {
+			return fail(reason, "the planet menu checkpoint buffers are not writable");
+		}
+
+		const auto *listener = ship_listener(reason);
+		if (listener == nullptr) {
+			return false;
+		}
+
+		// the same two names the planet menu's listener stores on accept: the
+		// tunnel script reads the destination from here once its cinematic ends
+		strncpy_s(g_tunnel_name, PLANET_MENU_CHECKPOINT_SIZE, through_name, _TRUNCATE);
+		strncpy_s(g_destination_name, PLANET_MENU_CHECKPOINT_SIZE, target_name, _TRUNCATE);
+
+		bool sent = false;
+		if (!call_accept(listener->plugs, through_name, target_name, &sent)) {
+			return fail(reason, "the ship listener faulted");
+		}
+
+		if (!sent) {
+			return fail(reason, "the ship's listener is not active, so nothing took the accept");
+		}
+
+		_snprintf_s(message, message_size, _TRUNCATE, "taking off for %s through %s", target_name, through_name);
+		g_output << "[travel] " << message << "\n";
+		g_output.flush();
+		return true;
+	}
+
+	// ------------------------------------------------------------------- rift --
+
+	// the passive shift controller, or null while none is loaded
+	static auto
+	shift_controller() -> uint8_t * {
+		if (g_shift_controller == nullptr || g_SceneManager == nullptr || g_SceneManager->components == nullptr) {
+			return nullptr;
+		}
+
+		const auto handle = EngineHandle { .value = *g_shift_controller };
+		if (handle.value == 0 || handle.value == UINT32_MAX || static_cast<int32_t>(handle.id) >= g_SceneManager->componentMax) {
+			return nullptr;
+		}
+
+		auto *component = g_SceneManager->ResolveComponent(handle);
+		if (component == nullptr || !ddl::is_writable(component, PASSIVE_SHIFT_STATE + 1) || component->IsDestroyed()) {
+			return nullptr;
+		}
+
+		return reinterpret_cast<uint8_t *>(component);
+	}
+
+	struct PortalRef {
+		uint32_t actor = 0;
+		Component *component = nullptr;
+		const ComponentInfo *type = nullptr;
+		bool passive = false; // a PortalPassiveShift: can follow the player and pull
+		bool active = false;  // the actor is activated: the level may be using it
+		float position[3] {};
+		char name[0x40] {};
+	};
+
+	// an actor's Portal component, or false when it has none
+	static auto
+	portal_ref(const uint32_t handle, PortalRef &entry) -> bool {
+		const auto *portal = scene_query::find_class("Portal");
+		const auto *passive = scene_query::find_class("PortalPassiveShift");
+		const auto *actor = g_SceneManager != nullptr ? g_SceneManager->ResolveActor(EngineHandle { .value = handle }) : nullptr;
+		if (portal == nullptr || actor == nullptr || actor->components == nullptr || actor->componentCount <= 0 || !ddl::is_readable(actor->components, sizeof(ComponentPointer) * actor->componentCount)) {
+			return false;
+		}
+
+		for (auto c = 0; c < actor->componentCount; ++c) {
+			const auto [type, instance] = actor->components[c];
+			if (type == nullptr || instance == nullptr || !ddl::is_readable(type, sizeof(ComponentInfo)) || !ddl::is_readable(instance, sizeof(Component)) || instance->IsDestroyed()) {
+				continue;
+			}
+
+			if (type != portal && !type->DerivesFrom(portal)) {
+				continue;
+			}
+
+			entry = {};
+			entry.actor = handle;
+			entry.component = instance;
+			entry.type = type;
+			entry.passive = passive != nullptr && (type == passive || type->DerivesFrom(passive));
+			entry.active = (actor->flags & ActorFlag::Activated) != 0;
+			position_of(handle, entry.position);
+			if (const auto *name = actor->GetName(); name != nullptr) {
+				ddl::read_string(name, entry.name, sizeof(entry.name));
+			}
+
+			return true;
+		}
+
+		return false;
+	}
+
+	// the actors with a Portal component loaded now
+	static auto
+	portals(PortalRef *out, const int32_t max) -> int32_t {
+		const auto *portal = scene_query::find_class("Portal");
+		if (portal == nullptr || g_SceneManager == nullptr) {
+			return 0;
+		}
+
+		uint32_t handles[256];
+		const auto found = scene_query::actors_with(portal, true, handles, 256, nullptr);
+		int32_t count = 0;
+		for (int32_t i = 0; i < found && count < max; ++i) {
+			if (portal_ref(handles[i], out[count])) {
+				++count;
+			}
+		}
+
+		return count;
+	}
+
+	// the engine calls on their own, so a fault is caught with nothing to unwind
+	static auto
+	call_load_asset(const char *path, Asset **out) -> bool {
+#ifdef _MSC_VER
+		__try {
+#endif
+			*out = g_load_actor_asset(g_actor_assets, path, nullptr, nullptr);
+			return true;
+#ifdef _MSC_VER
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			return false;
+		}
+#endif
+	}
+
+	static auto
+	call_spawn(const uint64_t asset, const float (*matrix)[4], const uint64_t uid, Actor **out) -> bool {
+#ifdef _MSC_VER
+		__try {
+#endif
+			*out = g_spawn_actor(asset, nullptr, matrix);
+			if (*out != nullptr) {
+				g_set_actor_uid(*out, uid);
+			}
+
+			return true;
+#ifdef _MSC_VER
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			return false;
+		}
+#endif
+	}
+
+	// sets a float of one of an actor's components' prius, the whole asset's
+	// when the prius is shared
+	static auto
+	prius_float(const uint32_t handle, const char *class_name, const char *field, const float value) -> bool {
+		const auto *wanted = scene_query::find_class(class_name);
+		const auto *actor = g_SceneManager != nullptr ? g_SceneManager->ResolveActor(EngineHandle { .value = handle }) : nullptr;
+		if (wanted == nullptr || actor == nullptr || actor->components == nullptr) {
+			return false;
+		}
+
+		for (auto c = 0; c < actor->componentCount; ++c) {
+			const auto [type, instance] = actor->components[c];
+			if (type != wanted || instance == nullptr || type->prius == nullptr || instance->ddlPriusData == nullptr) {
+				continue;
+			}
+
+			auto *data = ddl::prius_data(instance->ddlPriusData, type->prius->allocation_size);
+			const auto index = ddl::find_field(type->prius, field);
+			if (data == nullptr || index < 0) {
+				return false;
+			}
+
+			ddl::Value next {};
+			next.kind = ddl::ValueKind::Real;
+			next.as_real = value;
+			const char *why = nullptr;
+			return ddl::write_field(type->prius, data, index, 0, next, &why);
+		}
+
+		return false;
+	}
+
+	// one rift portal asset's state, asking for it when it is neither loading
+	// nor loaded. Invalid when it cannot be had
+	static auto
+	rift_asset(const int32_t which) -> AssetStatus {
+		auto *&asset = g_rift_assets[which];
+		if (asset != nullptr && ddl::is_readable(asset, sizeof(Asset)) && asset->status >= AssetStatus::InQueue && asset->status <= AssetStatus::Loaded) {
+			return asset->status;
+		}
+
+		Asset *loaded = nullptr;
+		if (!call_load_asset(RIFT_PORTAL_ASSETS[which], &loaded) || loaded == nullptr || !ddl::is_readable(loaded, sizeof(Asset))) {
+			asset = nullptr;
+			return AssetStatus::Invalid;
+		}
+
+		asset = loaded;
+		return loaded->status == AssetStatus::Error || loaded->status == AssetStatus::Aborted ? AssetStatus::Invalid : loaded->status;
+	}
+
+	// both rift portal assets: Loaded when both are, Invalid when either cannot
+	// be had, else still loading
+	static auto
+	rift_assets() -> AssetStatus {
+		if (g_spawn_actor == nullptr || g_rift_asset_failed) {
+			return AssetStatus::Invalid;
+		}
+
+		const auto first = rift_asset(0);
+		const auto second = rift_asset(1);
+		if (first == AssetStatus::Invalid || second == AssetStatus::Invalid) {
+			return AssetStatus::Invalid;
+		}
+
+		return first == AssetStatus::Loaded && second == AssetStatus::Loaded ? AssetStatus::Loaded : AssetStatus::Loading;
+	}
+
+	// the rift's four portals, spawned in the sky past the airlock where
+	// missing. A and C (0 and 2) are rift portals, B and D any portal. they stay
+	// between rifts, idle
+	static auto
+	own_portals(PortalRef *out) -> bool {
+		for (auto i = 0; i < 4; ++i) {
+			const auto follows = i == 0 || i == 2;
+			if (g_rift_portals[i] != 0 && portal_ref(g_rift_portals[i], out[i]) && (out[i].passive || !follows)) {
+				continue;
+			}
+
+			const float matrix[4][4] = {
+				{ 1.0f, 0.0f, 0.0f, 0.0f },
+				{ 0.0f, 1.0f, 0.0f, 0.0f },
+				{ 0.0f, 0.0f, 1.0f, 0.0f },
+				{ AIRLOCK_POSITION[0] + 50.0f * static_cast<float>(i + 1), AIRLOCK_POSITION[1], AIRLOCK_POSITION[2], 1.0f },
+			};
+
+			Actor *actor = nullptr;
+			if (!call_spawn(g_rift_assets[follows ? 0 : 1]->assetId, matrix, RIFT_PORTAL_UID + static_cast<uint64_t>(i), &actor) || actor == nullptr) {
+				g_rift_portals[i] = 0;
+				return false;
+			}
+
+			g_rift_portals[i] = scene_query::handle_of(actor);
+			if (g_rift_portals[i] == 0 || !portal_ref(g_rift_portals[i], out[i]) || (follows && !out[i].passive)) {
+				g_output << "[travel] spawned rift portal " << (i + 1) << " is not the kind of portal it has to be\n";
+				g_output.flush();
+				g_rift_portals[i] = 0;
+				return false;
+			}
+
+			// the test portals open in no time, and a rift portal that has not
+			// taken time to open never pulls
+			prius_float(g_rift_portals[i], "PortalRender", "TimeToOpen", RIFT_PORTAL_OPEN_TIME);
+			g_output << "[travel] spawned rift portal " << (i + 1) << ", actor " << g_rift_portals[i] << "\n";
+			g_output.flush();
+		}
+
+		for (auto i = 0; i < 4; ++i) {
+			_snprintf_s(out[i].name, sizeof(out[i].name), _TRUNCATE, "rift portal %d", i + 1);
+		}
+
+		return true;
+	}
+
+	// sets one bool of a portal's prius, handing back what it was
+	static auto
+	prius_bool(const PortalRef &portal, const char *field, const bool value, int8_t *previous) -> bool {
+		const auto *prius = portal.type->prius;
+		if (prius == nullptr || !ddl::is_readable(prius, sizeof(DDLTypeInfo)) || portal.component->ddlPriusData == nullptr) {
+			return false;
+		}
+
+		auto *data = ddl::prius_data(portal.component->ddlPriusData, prius->allocation_size);
+		const auto index = ddl::find_field(prius, field);
+		if (data == nullptr || index < 0) {
+			return false;
+		}
+
+		if (previous != nullptr) {
+			const auto old = ddl::read_field(prius, data, index);
+			*previous = old.kind == ddl::ValueKind::Bool ? (old.as_bool ? 1 : 0) : (old.as_unsigned != 0 ? 1 : 0);
+		}
+
+		ddl::Value next {};
+		next.kind = ddl::ValueKind::Bool;
+		next.as_bool = value;
+		const char *why = nullptr;
+		return ddl::write_field(prius, data, index, 0, next, &why);
+	}
+
+	// an actor's world matrix, writable, or null
+	static auto
+	matrix_of(const uint32_t handle) -> float (*)[4] {
+		auto *actor = g_SceneManager != nullptr ? g_SceneManager->ResolveActor(EngineHandle { .value = handle }) : nullptr;
+		if (actor == nullptr || actor->object == nullptr || !ddl::is_writable(actor->object, sizeof(SceneObject))) {
+			return nullptr;
+		}
+
+		return actor->object->transform_matrix;
+	}
+
+	static auto
+	restore_borrowed() -> void {
+		PortalRef loaded[64];
+		const auto count = portals(loaded, 64);
+		for (int32_t i = 0; i < g_borrowed_count; ++i) {
+			const auto &borrowed = g_borrowed[i];
+			if (auto *matrix = matrix_of(borrowed.actor); matrix != nullptr) {
+				memcpy(matrix, borrowed.matrix, sizeof(borrowed.matrix));
+			}
+
+			for (int32_t p = 0; p < count; ++p) {
+				if (loaded[p].actor != borrowed.actor) {
+					continue;
+				}
+
+				if (borrowed.followPlayer >= 0) {
+					prius_bool(loaded[p], "FollowPlayer", borrowed.followPlayer != 0, nullptr);
+				}
+
+				if (borrowed.gravityWell >= 0) {
+					prius_bool(loaded[p], "GravityWell", borrowed.gravityWell != 0, nullptr);
+				}
+			}
+		}
+
+		g_borrowed_count = 0;
+		g_rift_busy_seen = false;
+		g_rift_started = 0;
+		g_rift_state = 0;
+		g_output << "[travel] the rift's portals are put back\n";
+		g_output.flush();
+	}
+
+	// the engine call on its own, so a fault is caught with nothing to unwind
+	static auto
+	call_stop(void *controller) -> bool {
+		const uint32_t trigger = 0;
+#ifdef _MSC_VER
+		__try {
+#endif
+			g_shift_stop(controller, &trigger);
+			return true;
+#ifdef _MSC_VER
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			return false;
+		}
+#endif
+	}
+
+	auto
+	pump() -> void {
+		if (g_pending.waiting) {
+			const auto status = rift_assets();
+			if (status == AssetStatus::Loaded || status == AssetStatus::Invalid || GetTickCount64() - g_pending.since > RIFT_ASSET_TIMEOUT_MS) {
+				const auto pending = g_pending;
+				g_pending = {};
+				char message[0x180];
+				const char *reason = "refused";
+				if (status != AssetStatus::Loaded) {
+					g_rift_asset_failed = true;
+					g_output << "[travel] rift: the rift portal asset " << (status == AssetStatus::Invalid ? "failed to load" : "took too long to load") << "; trying the level's portals\n";
+				}
+
+				if (rift(pending.at_position ? "" : pending.checkpoint, pending.at_position ? pending.position : nullptr, message, sizeof(message), &reason)) {
+					g_output << "[travel] " << message << "\n";
+				} else {
+					g_output << "[travel] rift: " << reason << "\n";
+				}
+
+				g_output.flush();
+			}
+		}
+
+		if (g_borrowed_count == 0) {
+			return;
+		}
+
+		auto *controller = shift_controller();
+		const auto state = controller != nullptr ? controller[PASSIVE_SHIFT_STATE] : static_cast<uint8_t>(0);
+		if (state != g_rift_state) {
+			g_output << "[travel] rift: " << (state < std::size(SHIFT_STATE_NAMES) ? SHIFT_STATE_NAMES[state] : "?") << " after " << std::dec << (GetTickCount64() - g_rift_started) << " ms\n";
+			g_output.flush();
+			g_rift_state = state;
+		}
+
+		if (state != 0) {
+			g_rift_busy_seen = true;
+		}
+
+		if (g_rift_busy_seen && state == 0) {
+			restore_borrowed();
+			return;
+		}
+
+		// stuck: end the shift the way its script node's Stop input does, which
+		// closes the portals; the hero may need a warp out of the glide
+		if (GetTickCount64() - g_rift_started > RIFT_TIMEOUT_MS) {
+			if (controller != nullptr && state != 0) {
+				call_stop(controller);
+				g_output << "[travel] rift: timed out and stopped; level.warp a checkpoint if the hero is still gliding\n";
+			}
+
+			restore_borrowed();
+		}
+	}
+
+	// the engine calls on their own, so a fault is caught with nothing to unwind
+	static auto
+	call_shift(void *controller, const ShiftParams *params, const ActorArray *actors, const uint32_t *trigger, bool *started) -> bool {
+#ifdef _MSC_VER
+		__try {
+#endif
+			*started = g_shift_set_params(controller, params, actors) && g_shift_start(controller, trigger);
+			return true;
+#ifdef _MSC_VER
+		} __except (EXCEPTION_EXECUTE_HANDLER) {
+			return false;
+		}
+#endif
+	}
+
+	static auto
+	distance(const float *a, const float *b) -> float {
+		return sqrtf((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+	}
+
+	// the planet the hero is on: the area of the checkpoint nearest them, or -1
+	static auto
+	hero_area(const LevelAsset *asset, const CheckpointManager *table, const float *hero) -> int32_t {
+		const CheckpointData *home = nullptr;
+		for (int32_t i = 0; i < table->count; ++i) {
+			if (home == nullptr || distance(table->checkpoints[i].position, hero) < distance(home->position, hero)) {
+				home = &table->checkpoints[i];
+			}
+		}
+
+		return home != nullptr ? top_of(asset, home->region) : -1;
+	}
+
+	// the checkpoint an airlock at target loads: the nearest one to target on the
+	// hero's planet
+	static auto
+	checkpoint_near(const LevelAsset *asset, const CheckpointManager *table, const float *hero, const float *target) -> const CheckpointData * {
+		const auto area = hero_area(asset, table, hero);
+		if (area < 0) {
+			return nullptr;
+		}
+
+		const CheckpointData *best = nullptr;
+		for (int32_t i = 0; i < table->count; ++i) {
+			const auto &checkpoint = table->checkpoints[i];
+			if (top_of(asset, checkpoint.region) == area && (best == nullptr || distance(checkpoint.position, target) < distance(best->position, target))) {
+				best = &checkpoint;
+			}
+		}
+
+		return best;
+	}
+
+	auto
+	rift(const char *checkpoint, const float *position, char *message, const size_t message_size, const char **reason) -> bool {
+		message[0] = '\0';
+		if (g_shift_controller == nullptr) {
+			return fail(reason, "the passive shift controller was not found");
+		}
+
+		if (!game_thread::on_game_thread()) {
+			return fail(reason, "rifts can only open on the game thread, and it is not pumping (loading?)");
+		}
+
+		if (g_borrowed_count > 0) {
+			return fail(reason, "a rift is still open");
+		}
+
+		if (g_pending.waiting) {
+			return fail(reason, "a rift is waiting for its portals to load");
+		}
+
+		auto *controller = shift_controller();
+		if (controller == nullptr) {
+			return fail(reason, "the passive shift controller is not loaded");
+		}
+
+		if (controller[PASSIVE_SHIFT_STATE] != 0) {
+			return fail(reason, "a passive shift is already under way");
+		}
+
+		const auto *table = manager(reason);
+		const auto *asset = table != nullptr ? level(reason) : nullptr;
+		if (asset == nullptr) {
+			return false;
+		}
+
+		const auto hero = scene_query::hero();
+		float hero_at[3] {};
+		if (hero == 0 || !position_of(hero, hero_at)) {
+			return fail(reason, "there is no hero right now");
+		}
+
+		// where the rift leads, and the checkpoint its airlock loads
+		float target[3] {};
+		const CheckpointData *through = nullptr;
+		if (checkpoint != nullptr && checkpoint[0] != '\0') {
+			through = find_data(find(checkpoint));
+			if (through == nullptr) {
+				return fail(reason, "the level has no checkpoint with that name or hash");
+			}
+
+			memcpy(target, through->position, sizeof(target));
+		} else if (position != nullptr) {
+			memcpy(target, position, sizeof(target));
+			through = checkpoint_near(asset, table, hero_at, target);
+			if (through == nullptr) {
+				return fail(reason, "no checkpoint near the target for the airlock to load");
+			}
+		} else {
+			return fail(reason, "the rift needs a checkpoint or a position");
+		}
+
+		// another planet unloads this one while the hero is in the airlock, like the
+		// game's own shifts. the rift's spawned portals belong to no zone and
+		// outlive that; borrowed ones are this planet's actors and would not
+		const auto other_planet = top_of(asset, through->region) != hero_area(asset, table, hero_at);
+
+		// the game's shift: A opens next to the hero and pulls them in, B is where
+		// they come out gliding in the airlock, C opens in front of them once the
+		// far end is loaded, D lets them out at the target. A and C have to be
+		// rift portals, the kind that can follow the hero. the rift's own spawned
+		// portals are used when their asset is in; it loads on the first rift
+		PortalRef own[4];
+		switch (rift_assets()) {
+		case AssetStatus::Loaded:
+			if (own_portals(own)) {
+				break;
+			}
+
+			return fail(reason, "the rift portals could not be spawned");
+
+		case AssetStatus::InQueue:
+		case AssetStatus::Staging:
+		case AssetStatus::Loading:
+			g_pending = {};
+			g_pending.waiting = true;
+			g_pending.since = GetTickCount64();
+			if (checkpoint != nullptr && checkpoint[0] != '\0') {
+				strncpy_s(g_pending.checkpoint, checkpoint, _TRUNCATE);
+			} else {
+				g_pending.at_position = true;
+				memcpy(g_pending.position, position, sizeof(g_pending.position));
+			}
+
+			_snprintf_s(message, message_size, _TRUNCATE, "loading the rift portals; the rift opens as soon as they are in");
+			return true;
+
+		default:
+			break;
+		}
+
+		const auto spawned = own[0].component != nullptr;
+		if (other_planet && !spawned) {
+			return fail(reason, "that checkpoint is on another planet, which only the rift's own portals reach, and they could not be loaded");
+		}
+
+		// without them, the level's own portals are borrowed, idle ones first
+		PortalRef loaded[64];
+		const auto count = spawned ? 0 : portals(loaded, 64);
+		const PortalRef *taken[4] {};
+		auto taken_count = 0;
+		const auto pick = [&](const bool passive) -> const PortalRef * {
+			const PortalRef *best = nullptr;
+			for (int32_t i = 0; i < count; ++i) {
+				const auto *candidate = &loaded[i];
+				if (passive && !candidate->passive) {
+					continue;
+				}
+
+				if (std::find(taken, taken + taken_count, candidate) != taken + taken_count) {
+					continue;
+				}
+
+				// idle first, then the farthest from the hero
+				if (best == nullptr || (best->active && !candidate->active) || (best->active == candidate->active && distance(candidate->position, hero_at) > distance(best->position, hero_at))) {
+					best = candidate;
+				}
+			}
+
+			if (best != nullptr) {
+				taken[taken_count++] = best;
+			}
+
+			return best;
+		};
+
+		const auto *a = spawned ? &own[0] : pick(true);
+		const auto *c = spawned ? &own[2] : pick(true);
+		const auto *b = spawned ? &own[1] : pick(false);
+		const auto *d = spawned ? &own[3] : pick(false);
+		if (a == nullptr || c == nullptr || b == nullptr || d == nullptr) {
+			static char why[0x80];
+			_snprintf_s(why, sizeof(why), _TRUNCATE, "the rift portal asset did not load, and a rift borrows two rift portals and two more loaded here; there are %d portals", count);
+			return fail(reason, why);
+		}
+
+		float(*matrices[4])[4] = { matrix_of(a->actor), matrix_of(b->actor), matrix_of(c->actor), matrix_of(d->actor) };
+		for (const auto *matrix : matrices) {
+			if (matrix == nullptr) {
+				return fail(reason, "a borrowed portal has no writable transform");
+			}
+		}
+
+		// remember everything to put back
+		const PortalRef *lent[4] = { a, b, c, d };
+		for (auto i = 0; i < 4; ++i) {
+			g_borrowed[i] = {};
+			g_borrowed[i].actor = lent[i]->actor;
+			memcpy(g_borrowed[i].matrix, matrices[i], sizeof(g_borrowed[i].matrix));
+		}
+
+		g_borrowed_count = 4;
+		g_rift_started = GetTickCount64();
+		g_rift_busy_seen = false;
+		g_rift_state = 0;
+
+		// A and C follow the hero, only A pulls, like the game's own. the spawned
+		// A and C share one prius, so both pull; C only opens once the hero is
+		// gliding, when a pull no longer starts a shift. theirs stays set
+		if (spawned) {
+			prius_bool(*a, "FollowPlayer", true, nullptr);
+			prius_bool(*a, "GravityWell", true, nullptr);
+			if (b->passive) {
+				prius_bool(*b, "FollowPlayer", false, nullptr);
+				prius_bool(*b, "GravityWell", false, nullptr);
+			}
+		} else {
+			prius_bool(*a, "FollowPlayer", true, &g_borrowed[0].followPlayer);
+			prius_bool(*a, "GravityWell", true, &g_borrowed[0].gravityWell);
+			prius_bool(*c, "FollowPlayer", true, &g_borrowed[2].followPlayer);
+			prius_bool(*c, "GravityWell", false, &g_borrowed[2].gravityWell);
+		}
+
+		// B at the game's airlock facing +z, D upright over the target facing the
+		// way the hero was headed. the matrices keep their rows' scale
+		const auto place = [](float (*matrix)[4], const float *at, const float *forward) {
+			const float up[3] = { 0.0f, 1.0f, 0.0f };
+			const float right[3] = { forward[2], 0.0f, -forward[0] }; // up x forward
+			const float *axes[3] = { right, up, forward };
+			for (auto row = 0; row < 3; ++row) {
+				const auto scale = sqrtf(matrix[row][0] * matrix[row][0] + matrix[row][1] * matrix[row][1] + matrix[row][2] * matrix[row][2]);
+				for (auto axis = 0; axis < 3; ++axis) {
+					matrix[row][axis] = axes[row][axis] * (scale > 0.0f ? scale : 1.0f);
+				}
+			}
+
+			for (auto axis = 0; axis < 3; ++axis) {
+				matrix[3][axis] = at[axis];
+			}
+		};
+
+		const float airlock_forward[3] = { 0.0f, 0.0f, 1.0f };
+		place(matrices[1], AIRLOCK_POSITION, airlock_forward);
+
+		float heading[3] = { target[0] - hero_at[0], 0.0f, target[2] - hero_at[2] };
+		const auto length = sqrtf(heading[0] * heading[0] + heading[2] * heading[2]);
+		if (length > 0.01f) {
+			heading[0] /= length;
+			heading[2] /= length;
+		} else {
+			heading[0] = 0.0f;
+			heading[2] = 1.0f;
+		}
+
+		float exit[3] = { target[0], target[1] + RIFT_EXIT_HEIGHT, target[2] };
+		place(matrices[3], exit, heading);
+
+		ShiftParams params {};
+		params.startSource = a->component->handle.value;
+		params.startDest = b->component->handle.value;
+		params.endSource = c->component->handle.value;
+		params.endDest = d->component->handle.value;
+		params.checkpoint = through->nameHash;
+
+		const ActorArray actors { &hero, 1, 1 };
+		const uint32_t trigger = 0;
+		bool started = false;
+		if (!call_shift(controller, &params, &actors, &trigger, &started) || !started) {
+			restore_borrowed();
+			return fail(reason, started ? "the passive shift controller faulted" : "the passive shift controller refused the rift");
+		}
+
+		char checkpoint_name[0x80];
+		ddl::read_string(through->name, checkpoint_name, sizeof(checkpoint_name));
+		_snprintf_s(message, message_size, _TRUNCATE, "rift open: in by %s, airlock %s -> %s, out by %s at %.0f %.0f %.0f (airlock loads %s)", a->name, b->name, c->name, d->name, exit[0], exit[1], exit[2], checkpoint_name);
+		g_output << "[travel] " << message << "\n";
+		g_output.flush();
+		return true;
 	}
 
 	auto

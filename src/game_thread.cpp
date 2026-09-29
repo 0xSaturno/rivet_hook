@@ -19,6 +19,7 @@
 #include "runtime.hpp"
 #include "scripting.hpp"
 #include "signature.hpp"
+#include "travel.hpp"
 
 namespace rivet_hook::game_thread {
 	// the pass that carries the actors, and the phase after its first component
@@ -80,6 +81,7 @@ namespace rivet_hook::game_thread {
 		scripting::pump();
 		camera::pump();
 		hero_look::pump();
+		travel::pump();
 	}
 
 	static auto
