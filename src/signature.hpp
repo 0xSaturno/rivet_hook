@@ -229,6 +229,43 @@ namespace rivet_hook {
 	constexpr uint32_t OVERLAY_LOAD_MANAGER_OFFSET = 0x11;
 	constexpr uint32_t LOAD_SYSTEM_OVERLAY_LOAD_ADDRESS = 0x1C;
 	constexpr uint32_t LOAD_SYSTEM_OVERLAY_UNLOAD_ADDRESS = 0xC;
+	// the passive shift script node starting a shift: lea of the controller's
+	// component handle, resolve, then PassiveShiftController::SetParams
+	// (controller, params *, actor array *) and later Start (controller,
+	// triggering actor handle *). a shift pulls the hero through one portal pair,
+	// an airlock, and out of a second pair; the controller lands the hero at the end
+	MAKE_SIGNATURE(PASSIVE_SHIFT_SET_PARAMS, "48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 4C 8D 45 D7 48 8B C8 48 8D 55 E7 E8")
+	MAKE_SIGNATURE(PASSIVE_SHIFT_START, "48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8D 55 67 48 8B C8 E8")
+	// the node's Stop input: resolve the controller, then Stop (controller,
+	// triggering actor handle *), which ends the shift if that actor started it
+	MAKE_SIGNATURE(PASSIVE_SHIFT_STOP, "89 54 24 38 E8 ?? ?? ?? ?? 48 8B C8 48 8D 54 24 38 E8 ?? ?? ?? ?? 48 8B CB 48 83 C4 20 5B E9")
+
+	constexpr uint32_t PASSIVE_SHIFT_CONTROLLER_ADDRESS = 0x3;
+	constexpr uint32_t PASSIVE_SHIFT_SET_PARAMS_ADDRESS = 0x18;
+	constexpr uint32_t PASSIVE_SHIFT_START_ADDRESS = 0x14;
+	constexpr uint32_t PASSIVE_SHIFT_STOP_ADDRESS = 0x12;
+	// SpawnActorFromAsset (asset id, owner or null, const Mat4 *) -> Actor *: looks
+	// up a loaded actor asset and creates an actor from it at the matrix, there
+	// and then. null when the asset is not loaded
+	MAKE_SIGNATURE(SPAWN_ACTOR_FROM_ASSET, "48 89 5C 24 08 57 48 81 EC 90 00 00 00 48 8B FA 49 8B D8 48 8B D1 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 85 C0 74")
+	// the controller's state; anything but 0 (idle) is a shift in progress
+	constexpr uint32_t PASSIVE_SHIFT_STATE = 0x48;
+
+	// the two planet menu script nodes that hand the travel checkpoints to the
+	// tunnel script: lea of a 256 byte name buffer, then SetVarString(plugs,
+	// buffer, "CheckpointName"). matches twice: the tunnel checkpoint buffer, and
+	// 0x100 past it the destination one
+	MAKE_SIGNATURE(PLANET_MENU_CHECKPOINT_READ, "48 8D 15 ?? ?? ?? ?? 48 8B 49 58 41 B8 F1 61 D0 71 E8")
+
+	// the ship's planet menu listener taking an accept: SetVarString(plugs,
+	// tunnel name, var) and later a tail jump to SendSignal(plugs, output). the
+	// sibling listener shares the prologue, both call the same two
+	MAKE_SIGNATURE(PLANET_MENU_ACCEPT_HANDLER, "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B F9 48 8B F2 48 8D 8A 38 01 00 00 E8")
+
+	constexpr uint32_t PLANET_MENU_SET_VAR_STRING_ADDRESS = 0x37;
+	constexpr uint32_t PLANET_MENU_SEND_SIGNAL_ADDRESS = 0xA2;
+	constexpr uint32_t PLANET_MENU_CHECKPOINT_ADDRESS = 0x3;
+	constexpr uint32_t PLANET_MENU_CHECKPOINT_SIZE = 0x100;
 	constexpr uint32_t LOAD_SYSTEM_GET_INSTANCE_ADDRESS = 0x1;
 	constexpr uint32_t LOAD_SYSTEM_CHECKPOINTS_OFFSET = 0xB;
 	// GetInstance is mov rax, [instance]; ret
