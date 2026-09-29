@@ -121,6 +121,96 @@ namespace rivet_hook::bridge {
 		return text;
 	}
 
+	// the actors within radius of a point, nearest first, with their actor asset
+	// and component classes: what a place is made of
+	static auto
+	cmd_scene_near(const std::vector<std::string> &args) -> std::string {
+		if (args.size() < 5) {
+			return error("usage: scene.near <x> <y> <z> <radius> [limit]");
+		}
+
+		if (g_SceneManager == nullptr || g_SceneManager->actors == nullptr || g_SceneManager->actorMax <= 0 || !ddl::is_readable(g_SceneManager->actors, sizeof(Actor))) {
+			return error("scene manager is not available");
+		}
+
+		const float at[3] = { std::stof(args[1]), std::stof(args[2]), std::stof(args[3]) };
+		const auto radius = std::stof(args[4]);
+		const auto limit = args.size() > 5 ? std::stoi(args[5]) : 100;
+
+		constexpr uint64_t SCAN_BUDGET_MS = 250;
+		const auto started = GetTickCount64();
+		auto truncated = false;
+		std::vector<std::pair<float, int32_t>> found;
+		for (int32_t index = 0; index < g_SceneManager->actorMax; ++index) {
+			if ((index & 0x3FF) == 0 && GetTickCount64() - started > SCAN_BUDGET_MS) {
+				truncated = true;
+				break;
+			}
+
+			const auto *actor = &g_SceneManager->actors[index];
+			if (!actor->IsValid()) {
+				continue;
+			}
+
+			const auto *position = actor->object->transform_matrix[3];
+			const auto dx = position[0] - at[0];
+			const auto dy = position[1] - at[1];
+			const auto dz = position[2] - at[2];
+			const auto distance = sqrtf(dx * dx + dy * dy + dz * dz);
+			if (distance <= radius) {
+				found.emplace_back(distance, index);
+			}
+		}
+
+		std::sort(found.begin(), found.end());
+		nlohmann::json::array_t actors;
+		for (const auto &[distance, index] : found) {
+			if (static_cast<int32_t>(actors.size()) >= limit) {
+				break;
+			}
+
+			const auto *actor = &g_SceneManager->actors[index];
+			char name[0x100];
+			if (!ddl::read_string(actor->GetName(), name, sizeof(name))) {
+				name[0] = '\0';
+			}
+
+			char asset[0x200];
+			asset[0] = '\0';
+			if (actor->actorAsset != nullptr && ddl::is_readable(actor->actorAsset, sizeof(Asset))) {
+				ddl::read_string(actor->actorAsset->name, asset, sizeof(asset));
+			}
+
+			nlohmann::json::array_t classes;
+			if (actor->components != nullptr && actor->componentCount > 0 && ddl::is_readable(actor->components, sizeof(ComponentPointer) * actor->componentCount)) {
+				for (auto c = 0; c < actor->componentCount; ++c) {
+					const auto *type = actor->components[c].componentType;
+					char class_name[0x80];
+					if (type != nullptr && ddl::is_readable(type, sizeof(ComponentInfo)) && ddl::read_string(type->name, class_name, sizeof(class_name))) {
+						classes.emplace_back(class_name);
+					}
+				}
+			}
+
+			const auto *position = actor->object->transform_matrix[3];
+			nlohmann::json entry;
+			entry["handle"] = EngineHandle { .id = static_cast<uint32_t>(index), .generation = actor->generation }.value;
+			entry["name"] = name;
+			entry["asset"] = asset;
+			entry["distance"] = distance;
+			entry["position"] = { position[0], position[1], position[2] };
+			entry["flags"] = DescribeActorFlags(actor->flags);
+			entry["components"] = classes;
+			actors.emplace_back(entry);
+		}
+
+		nlohmann::json result;
+		result["matched"] = found.size();
+		result["truncated"] = truncated;
+		result["actors"] = actors;
+		return ok(result);
+	}
+
 	static auto
 	cmd_scene_actors(const std::vector<std::string> &args) -> std::string {
 		if (g_SceneManager == nullptr || g_SceneManager->actors == nullptr) {
@@ -1849,6 +1939,47 @@ namespace rivet_hook::bridge {
 			return ok(list(args.size() > 1 ? args[1].c_str() : "", parse_limit(args, 2, args[0] == "level.zones" ? 100 : 1000)));
 		}
 
+		// level.rift <checkpoint | x y z>
+		if (args[0] == "level.rift") {
+			if (args.size() != 2 && args.size() != 4) {
+				return error("usage: level.rift <checkpoint name|0xhash> or level.rift <x> <y> <z>");
+			}
+
+			float position[3] {};
+			if (args.size() == 4) {
+				for (auto i = 0; i < 3; ++i) {
+					position[i] = strtof(args[i + 1].c_str(), nullptr);
+				}
+			}
+
+			char message[0x180];
+			const char *reason = nullptr;
+			if (!travel::rift(args.size() == 2 ? args[1].c_str() : "", args.size() == 4 ? position : nullptr, message, sizeof(message), &reason)) {
+				return error(reason != nullptr ? reason : "refused");
+			}
+
+			nlohmann::json result;
+			result["done"] = message;
+			return ok(result);
+		}
+
+		// level.fly <destination> [via tunnel]
+		if (args[0] == "level.fly") {
+			if (args.size() < 2) {
+				return error("usage: level.fly <destination checkpoint> [via tunnel, e.g. SAVALI]");
+			}
+
+			char message[0x180];
+			const char *reason = nullptr;
+			if (!travel::fly(args[1].c_str(), args.size() > 2 ? args[2].c_str() : "", message, sizeof(message), &reason)) {
+				return error(reason != nullptr ? reason : "refused");
+			}
+
+			nlohmann::json result;
+			result["done"] = message;
+			return ok(result);
+		}
+
 		if (args.size() < 2) {
 			return error("usage: level.warp <checkpoint name|0xhash>");
 		}
@@ -1904,6 +2035,10 @@ namespace rivet_hook::bridge {
 		}
 
 		const auto &command = args[0];
+		if (command == "scene.near") {
+			return cmd_scene_near(args);
+		}
+
 		if (command == "scene.actors") {
 			return cmd_scene_actors(args);
 		}
@@ -1987,7 +2122,7 @@ namespace rivet_hook::bridge {
 			return cmd_script_node(args);
 		}
 
-		if (command == "level.checkpoints" || command == "level.regions" || command == "level.zones" || command == "level.warp") {
+		if (command == "level.checkpoints" || command == "level.regions" || command == "level.zones" || command == "level.warp" || command == "level.fly" || command == "level.rift") {
 			return cmd_level(args);
 		}
 
@@ -2193,7 +2328,7 @@ namespace rivet_hook::bridge {
 		if (args[0] == "help") {
 			nlohmann::json result;
 			result["commands"] = nlohmann::json::array_t {
-				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]", "hud.notify <text>", "hud.message <type> <seconds> <text>", "vanity.equip <bundle>", "vanity.owns <bundle>", "hero.look [.actor or .model path] [anims]", "hero.models [filter]", "hero.play_as <ratchet|clank|rivet|kit>", "hero.apply_on_launch <on|off>","hero.restore", "config.list [type] [limit]", "config.get <config>", "config.set <config> <field.path> <value>", "script.nodes [filter] [limit]", "script.node <component>", "script.signal <component> <plug>", "script.signal <actor> <component class> <plug> [nth]", "level.checkpoints [filter] [limit]", "level.warp <checkpoint name|0xhash>", "level.regions [filter] [limit]", "level.zones <filter> [limit]", "level.go <zone>", "level.overlay <region>", "level.unload <region>"
+				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.near <x> <y> <z> <radius> [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]", "hud.notify <text>", "hud.message <type> <seconds> <text>", "vanity.equip <bundle>", "vanity.owns <bundle>", "hero.look [.actor or .model path] [anims]", "hero.models [filter]", "hero.play_as <ratchet|clank|rivet|kit>", "hero.apply_on_launch <on|off>","hero.restore", "config.list [type] [limit]", "config.get <config>", "config.set <config> <field.path> <value>", "script.nodes [filter] [limit]", "script.node <component>", "script.signal <component> <plug>", "script.signal <actor> <component class> <plug> [nth]", "level.checkpoints [filter] [limit]", "level.warp <checkpoint name|0xhash>", "level.fly <destination> [via tunnel]", "level.rift <checkpoint | x y z>", "level.regions [filter] [limit]", "level.zones <filter> [limit]", "level.go <zone>", "level.overlay <region>", "level.unload <region>"
 			};
 			return ok(result);
 		}
