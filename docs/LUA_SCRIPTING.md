@@ -500,6 +500,8 @@ reflected CRC32 seeded with `0xEDB88320` and no final xor.
 |---|---|
 | `rivet.checkpoints([filter])` | the level's checkpoints as `{ name, hash, region, area }`, names containing `filter` |
 | `rivet.warp(checkpoint)` | warp the hero to a checkpoint, by name (`"CHK_SAV_01_LANDING"`) or `0x` hash |
+| `rivet.fly(destination, [via])` | the ship's travel to any checkpoint: takeoff, planet tunnel, landing |
+| `rivet.rift(checkpoint)`, `rivet.rift(x, y, z)` | the game's rift: pulled in, through the airlock, out at the target, on any planet |
 | `rivet.zones(filter, [limit])` | the level's zones whose path contains `filter`, as `{ path, asset, route, checkpoint, region }` |
 | `rivet.go(zone)` | go where a zone is loaded; returns what it did |
 | `rivet.overlay(region, [load])` | load an overlay region on top of what is loaded, or unload it with `load = false` |
@@ -515,6 +517,33 @@ Warping moves the save's current checkpoint, as the game's own warps do. A
 checkpoint on a planet or in a mission the save has not reached can leave the
 save there. `area` is the top level region a checkpoint is in, named after its
 file: `Savali`, `Savali (open world)`, `PrisonShip`.
+
+`fly` is the ship's own travel. Accepting the planet menu hands the ship's
+level script two checkpoint names, a planet tunnel (`CHK_TRANSITION_TO_SAVALI`,
+one per planet) and a destination; the ship takes off, the tunnel's script plays
+the flight and warps on to the destination. `fly` hands the ship the same
+accept with any destination, so it needs a ship loaded nearby (the one whose
+menu screen is nearest the hero is used). `via` picks the tunnel, as its full
+name or just the planet part (`"SAVALI"`); left out, it is the tunnel of the
+destination's planet. Warping straight into a tunnel checkpoint does not work:
+the tunnel is a cinematic space with nothing to stand on.
+
+`rift` is the game's passive shift, the rift that pulls the hero in, glides
+them through an airlock while the far end loads, and lets them out to land.
+The engine's `PassiveShiftController` runs it with four portals, and `rift`
+spawns its own, once, from two test portal actors the game ships: one opens
+next to the hero and pulls them in, the second is where they come out in the
+airlock (the spot in the sky the game's own shifts use), the third opens in
+front of them there, and the last is moved over the target. The first rift
+loads the portal actors and opens as soon as they are in. The hero keeps some
+of the glide's speed and lands a few dozen metres on, in the way they were
+heading. If a shift has not ended after a minute it is stopped. The target can
+be on another planet: the airlock loads it while the hero glides, as in the
+story, and the spawned portals belong to no zone, so they outlive the unload.
+When the portal actors cannot be loaded, the level's own rift portals are
+borrowed instead, which only reaches the hero's own planet. The airlock is
+plain sky: the story's airlock look comes from mission actors (a conduit actor
+and a portal override volume) that only its missions load.
 
 The engine never loads a single `.zone`. A level is a tree of regions, and a
 region loads a list of zones: a planet's instanced areas, the 128 m tiles of an

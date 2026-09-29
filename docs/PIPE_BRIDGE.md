@@ -25,6 +25,7 @@ python tools/rivetctl.py scene.actors Rivet
 python tools/rivetctl.py actor.hero
 python tools/rivetctl.py actor.uid 9a2452401153515b
 python tools/rivetctl.py scene.find_component HeroSkinManager
+python tools/rivetctl.py scene.near -2908 3052 2060 200
 python tools/rivetctl.py actor.dump 0x1234
 python tools/rivetctl.py mem.read 0x7ff600000000 64
 python tools/rivetctl.py component.capture StrafeCameraMover first on
@@ -33,6 +34,10 @@ python tools/rivetctl.py component.captures
 
 Run `python tools/rivetctl.py help` for the full command list; it comes
 straight from the running hook, so it never drifts out of date.
+
+`scene.near <x> <y> <z> <radius> [limit]` lists the actors around a point,
+nearest first, with their actor asset path and component classes: what a place
+is made of.
 
 `mem.watch` answers "what changes this?" with a hardware breakpoint in debug
 register 0 of every thread alive when it is armed. `mem.watch <address> [length]`
@@ -170,7 +175,16 @@ either a component and a plug or an actor, a class and a plug. See
 ```bash
 python tools/rivetctl.py level.checkpoints LANDING
 python tools/rivetctl.py level.warp CHK_SAV_01_LANDING
+python tools/rivetctl.py level.fly CHK_BLIZAR_A_LANDINGPAD
+python tools/rivetctl.py level.fly CHK_ZURK_LANDING_SHIP SAVALI
+python tools/rivetctl.py level.rift CHK_SAV_01_LANDING
+python tools/rivetctl.py level.rift -150 390 4
 ```
+
+`level.fly <destination> [via]` is `rivet.fly`: the ship's travel, takeoff,
+planet tunnel and landing, to any checkpoint. It needs a ship loaded nearby.
+`level.rift <checkpoint | x y z>` is `rivet.rift`: the game's rift, through
+the airlock to a checkpoint on any planet, or a position on the hero's.
 
 ```bash
 python tools/rivetctl.py level.zones savali/tile_a21
