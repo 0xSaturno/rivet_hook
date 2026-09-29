@@ -628,10 +628,6 @@ round trip:
   scale. New UI belongs in Overlay, which is a single full-screen view authored
   in 1920x1080 pixels.
 
-[`scripts/minimap.lua`](../scripts/minimap.lua) is a worked example: it publishes
-the hero's position and nearby pickups every frame, and the page that reads it
-draws them on a minimap.
-
 ## Driving it from outside
 
 With `[bridge] enabled = true` as well:

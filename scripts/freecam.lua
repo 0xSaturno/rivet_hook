@@ -16,7 +16,7 @@
 -- The game keeps running on its own camera while this one is detached, so Rivet
 -- still answers to the controller and keyboard, and aiming still works from the
 -- game camera. rivet.time_scale(0.1) pairs well with it for slow motion shots.
--- Everything is on the numpad so it stays clear of minimap.lua's F keys.
+-- Everything is on the numpad so it stays clear of the other scripts' keys.
 -- Movement goes by real time, so it keeps its speed under any time scale.
 
 local speed = 8      -- metres per second
