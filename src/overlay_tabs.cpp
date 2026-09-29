@@ -1629,6 +1629,22 @@ namespace rivet_hook::overlay {
 					});
 				}
 
+				// the ship's travel: through the planet's tunnel and its cinematic
+				ImGui::SameLine();
+				if (ImGui::SmallButton(std::format("Fly##{}", row).c_str())) {
+					travel_act([name](char *message, const size_t size, const char **reason) {
+						return travel::fly(name.c_str(), "", message, size, reason);
+					});
+				}
+
+				// the rift: pulled through the game's passive shift to the checkpoint
+				ImGui::SameLine();
+				if (ImGui::SmallButton(std::format("Rift##{}", row).c_str())) {
+					travel_act([name](char *message, const size_t size, const char **reason) {
+						return travel::rift(name.c_str(), nullptr, message, size, reason);
+					});
+				}
+
 				ImGui::SameLine();
 				ImGui::Text("%s", name.c_str());
 				ImGui::SameLine();

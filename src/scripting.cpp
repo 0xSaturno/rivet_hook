@@ -2239,6 +2239,47 @@ namespace rivet_hook::scripting {
 		return 1;
 	}
 
+	// rivet.fly(destination, [via]) -> what it did. the ship's travel through a
+	// planet tunnel (via, "SAVALI" or CHK_TRANSITION_TO_SAVALI; the destination's
+	// own planet when left out) to any checkpoint
+	static auto
+	l_fly(lua_State *L) -> int {
+		const auto *destination = luaL_checkstring(L, 1);
+		const auto *via = luaL_optstring(L, 2, "");
+
+		char message[0x180];
+		const char *reason = "refused";
+		if (!travel::fly(destination, via, message, sizeof(message), &reason)) {
+			luaL_error(L, "%s", reason);
+		}
+
+		lua_pushstring(L, message);
+		return 1;
+	}
+
+	// rivet.rift(checkpoint) or rivet.rift(x, y, z) -> what it did. the game's
+	// passive shift to a checkpoint or a position on the hero's planet: a rift
+	// pulls the hero in, through the airlock, and lets them out at the target
+	static auto
+	l_rift(lua_State *L) -> int {
+		char message[0x180];
+		const char *reason = "refused";
+		auto opened = false;
+		if (lua_type(L, 1) == LUA_TSTRING) {
+			opened = travel::rift(lua_tostring(L, 1), nullptr, message, sizeof(message), &reason);
+		} else {
+			const float position[3] = { static_cast<float>(luaL_checknumber(L, 1)), static_cast<float>(luaL_checknumber(L, 2)), static_cast<float>(luaL_checknumber(L, 3)) };
+			opened = travel::rift("", position, message, sizeof(message), &reason);
+		}
+
+		if (!opened) {
+			luaL_error(L, "%s", reason);
+		}
+
+		lua_pushstring(L, message);
+		return 1;
+	}
+
 	// rivet.overlay(region, [load]) -> what it did. loads an overlay region on top
 	// of what is loaded, or unloads it when load is false
 	static auto
@@ -2312,6 +2353,8 @@ namespace rivet_hook::scripting {
 		{ "warp", l_warp },
 		{ "zones", l_zones },
 		{ "go", l_go },
+		{ "fly", l_fly },
+		{ "rift", l_rift },
 		{ "overlay", l_overlay },
 		{ nullptr, nullptr },
 	};
