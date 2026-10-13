@@ -66,6 +66,14 @@ namespace rivet_hook {
 			bool apply_on_launch = false;
 		} hero_look;
 
+		struct Collision {
+			// how far the experimental runtime mesh collision may go, see
+			// collision.hpp. 0 is off
+			int stage = 0;
+			// the most triangles one mesh may have to be cooked
+			int max_triangles = 2048;
+		} collision;
+
 		struct RenderDoc {
 			bool enabled = false;
 			std::string dll_path { "renderdoc.dll" };

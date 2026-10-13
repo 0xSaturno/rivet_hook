@@ -147,6 +147,9 @@ namespace rivet_hook {
 				LOAD_SETTING(hero_look, bool, anims);
 				LOAD_SETTING(hero_look, bool, apply_on_launch);
 
+				LOAD_SETTING(collision, int, stage);
+				LOAD_SETTING(collision, int, max_triangles);
+
 				LOAD_SETTING(renderdoc, bool, enabled);
 				LOAD_SETTING(renderdoc, std::string, dll_path);
 
@@ -213,6 +216,7 @@ namespace rivet_hook {
 		CREATE_TABLE(bridge);
 		CREATE_TABLE(scripts);
 		CREATE_TABLE(hero_look);
+		CREATE_TABLE(collision);
 		CREATE_TABLE(renderdoc);
 		CREATE_TABLE(assets);
 		CREATE_TABLE(log);
@@ -246,6 +250,9 @@ namespace rivet_hook {
 		SAVE_SETTING(hero_look, path, "the last look put on the hero, a .actor or .model path; empty once it was taken off");
 		SAVE_SETTING(hero_look, anims, "whether that look also carries its actor asset's anim sets");
 		SAVE_SETTING(hero_look, apply_on_launch, "put that look back on once the hero first appears after a launch");
+
+		SAVE_SETTING(collision, stage, "experimental runtime mesh collision, see docs/PIPE_BRIDGE.md: 0 off, 1 read only, 2 first engine calls, 3 a body from a loaded zone's shape, 4 the mesh cook, 5 cooked bodies; disable by default because a wrong step crashes the game");
+		SAVE_SETTING(collision, max_triangles, "the most triangles a mesh may have to be cooked; the cook runs inside the game frame");
 
 		SAVE_SETTING(renderdoc, enabled, "loads renderdoc.dll into the game; disable by default because it has issues with ReShade");
 		SAVE_SETTING(renderdoc, dll_path, "path to renderdoc/dll");

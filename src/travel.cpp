@@ -17,6 +17,7 @@
 
 #include "travel.hpp"
 
+#include "collision.hpp"
 #include "ddl_visit.hpp"
 #include "game/load_system.hpp"
 #include "game/scene_manager.hpp"
@@ -567,6 +568,12 @@ namespace rivet_hook::travel {
 			return fail(reason, "warps can only start on the game thread, and it is not pumping (loading?)");
 		}
 
+		// a warp can unload the zone a collision test body's shape lives in, and
+		// what a planet change does to any of them is not known
+		if (const auto *why = collision::in_the_way(true); why != nullptr) {
+			return fail(reason, why);
+		}
+
 		// the warp state reads the checkpoint's data without checking it exists
 		const auto *data = find_data(checkpoint);
 		if (data == nullptr) {
@@ -1073,6 +1080,27 @@ namespace rivet_hook::travel {
 		}
 	}
 
+	auto
+	zone_id(const char *zone, uint64_t &asset, char *path, const size_t path_size, const char **reason) -> bool {
+		asset = 0;
+		path[0] = '\0';
+
+		const char *why = nullptr;
+		const auto *loaded = level(&why);
+		if (const auto index = loaded != nullptr ? resolve_zone(loaded, zone, &why) : -1; index >= 0) {
+			asset = loaded->zones[index].asset;
+			zone_path(loaded, index, path, path_size);
+			return true;
+		}
+
+		if (is_hex_id(zone)) {
+			asset = _strtoui64(zone, nullptr, 16);
+			return true;
+		}
+
+		return fail(reason, why != nullptr ? why : "no level is loaded");
+	}
+
 	// ---------------------------------------------------------------- tunnels --
 
 	// letters and digits only, lower case: "Nefarious_City (open world)" and
@@ -1248,6 +1276,11 @@ namespace rivet_hook::travel {
 
 		if (!game_thread::on_game_thread()) {
 			return fail(reason, "travel can only start on the game thread, and it is not pumping (loading?)");
+		}
+
+		// as for a warp: the planet under a collision test body goes
+		if (const auto *why = collision::in_the_way(true); why != nullptr) {
+			return fail(reason, why);
 		}
 
 		const auto *table = manager(reason);
@@ -1770,6 +1803,11 @@ namespace rivet_hook::travel {
 			return fail(reason, "rifts can only open on the game thread, and it is not pumping (loading?)");
 		}
 
+		// as for a warp: the airlock loads a checkpoint, on another planet or not
+		if (const auto *why = collision::in_the_way(true); why != nullptr) {
+			return fail(reason, why);
+		}
+
 		if (g_borrowed_count > 0) {
 			return fail(reason, "a rift is still open");
 		}
@@ -2006,6 +2044,12 @@ namespace rivet_hook::travel {
 
 		if (!game_thread::on_game_thread()) {
 			return fail(reason, "overlays can only load on the game thread, and it is not pumping (loading?)");
+		}
+
+		// a body the collision tests made of a loaded zone's shape reads that
+		// zone's physics file for as long as the body is there
+		if (const auto *why = load ? nullptr : collision::in_the_way(false); why != nullptr) {
+			return fail(reason, why);
 		}
 
 		const auto *asset = level(reason);

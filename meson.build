@@ -121,6 +121,7 @@ if not get_option('loader_only')
     sources += [
         'src/bridge.cpp',
         'src/camera.cpp',
+        'src/collision.cpp',
         'src/configs.cpp',
         'src/ddl.cpp',
         'src/ddl_visit.cpp',

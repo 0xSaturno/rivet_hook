@@ -14,6 +14,7 @@
 #include "bridge.hpp"
 #include "ddl_visit.hpp"
 #include "camera.hpp"
+#include "collision.hpp"
 #include "events.hpp"
 #include "hero_look.hpp"
 #include "runtime.hpp"
@@ -84,6 +85,7 @@ namespace rivet_hook::game_thread {
 		hero_look::pump();
 		travel::pump();
 		spawn::pump();
+		collision::pump();
 	}
 
 	static auto

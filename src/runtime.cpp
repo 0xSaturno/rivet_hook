@@ -17,6 +17,7 @@
 #include "events.hpp"
 #include "time_scale.hpp"
 #include "camera.hpp"
+#include "collision.hpp"
 #include "hud.hpp"
 #include "vanity.hpp"
 #include "hero_look.hpp"
@@ -302,6 +303,7 @@ namespace rivet_hook {
 			script_signal::init();
 			travel::init();
 			spawn::init();
+			collision::init();
 			bridge::init();
 			scripting::init();
 			g_output << "[rivet] starting ddl thread\n";

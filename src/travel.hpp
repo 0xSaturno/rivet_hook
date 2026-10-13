@@ -55,6 +55,13 @@ namespace rivet_hook::travel {
 	auto
 	go(const char *zone, char *message, size_t message_size, const char **reason) -> bool;
 
+	// the asset id of a zone named the way go takes one, and its path when the
+	// level lists it. 16 hex digits the level does not list are still taken for
+	// an id: a zone can be loaded without the level knowing its path. game
+	// thread only.
+	auto
+	zone_id(const char *zone, uint64_t &asset, char *path, size_t path_size, const char **reason) -> bool;
+
 	// the ship's travel, to any checkpoint: hands the ship's planet menu listener
 	// the same accept the menu would, with a planet tunnel (a CHK_TRANSITION_TO_
 	// checkpoint) and our destination. the ship's own script then takes off, flies
