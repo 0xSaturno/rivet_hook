@@ -105,7 +105,10 @@ names `rivet.components` returns.
 names a slot and goes stale on any level change; a uid is the actor's identity
 and, for zone placed actors (bit 63 set: a leading hex digit of `8` or higher),
 the same every launch. Spawned actors, the hero included, get a runtime uid
-without bit 63, which works for the session but should not be stored.
+without bit 63, which works for the session but should not be stored. The
+actors of `rivet.spawn` are the exception to the bit: theirs has bit 63 too,
+out of a range of the hook's own (`ee5f7eed...`), and is good for the session
+only.
 `rivet.find_uid` is a single probe of the engine's own uid table.
 
 **Look an actor up once and keep the handle.** Both scans walk the whole scene,
@@ -586,6 +589,72 @@ rivet.overlay("SARG_PocketDim_01")
 
 The overlay's Travel tab has the same three views: checkpoints by area, a zone
 search with a Go button, and the overlay regions with Load and Unload.
+
+### Spawned actors
+
+| | |
+|---|---|
+| `rivet.spawn(path, x, y, z, [yaw], [sx, sy, sz])` | spawn the actor of an `.actor` and activate it; returns `handle, uid, state` |
+| `rivet.destroy(handle)` | destroy an actor `spawn` made; `true`. `rivet.destroy("all")` destroys every one, drops the ones still loading and returns how many |
+| `rivet.spawned()` | the actors `spawn` made, as `{ handle, uid, state, path, x, y, z, yaw, sx, sy, sz }` |
+
+`spawn` is the engine's own spawn from an actor asset, the one the rift's
+portals come from, and then the activate call the game's own spawns make right
+after it. What the actor is, model, collision and behaviour, comes from the
+asset. `yaw` is in degrees about the up axis, as the camera has it: 0 faces +Z
+and turns toward +X. The scale is per axis, 1 when left out, and has to be
+between 0.001 and 1000. Both go in with the spawn, where the engine sets the
+actor up from them; `set_position` afterwards is the same nudge it is on any
+other actor, so to move, turn or resize one, destroy it and spawn it again.
+The position has to be within 4096 of the origin on every axis, which is as
+far as a level and its physics reach.
+
+`state` is `"active"`, or `"inactive"` when the engine did not activate the
+actor. An asset that is not loaded yet is loaded first, and `spawn` returns
+`nil, uid, "loading"`: the first pump after the asset is in spawns the actor,
+with that uid, and `rivet.find_uid(uid)` or `rivet.spawned()` has its handle
+from then on. Calling `spawn` again in the meantime asks for a second actor. A
+waiting spawn is dropped, with a line in `rivet.log`, when its asset fails to
+load, when 30 seconds go by without the asset loaded and a hero in the level,
+or when the level changes under it: actor updates stopping for more than a
+second, as they do for a load, or the hero being another actor than when it
+was asked for. A path with no asset behind it raises at once.
+
+Each actor gets a uid from a range of the hook's own, with bit 63 set like a
+placed actor's, since that is the form the engine's uid lookups find. It is
+good for the session, not across launches. The actors of one asset share their
+prius, so `rivet.set_field` on one changes every actor of that asset, spawned
+or placed.
+
+`destroy` deactivates the actor, which takes it out of the scene, and hands it
+to the engine's own deferred destroy: the engine frees it at the start of the
+next actor update, and until then `spawned` lists it as `"destroying"`. It
+only takes handles `spawn` gave out, so it cannot reach the hero or a level
+actor. A spawned actor belongs to no zone; the hook gives it the flag the
+engine's level unload goes by, so it is destroyed with the level, and it drops
+out of `spawned` once the engine has destroyed it. There can be 256 at a time,
+loading ones included.
+
+`rivet.destroy("all")` also drops the spawns that are still loading. That is
+the only way to call one of those off, since it has no handle yet. The number
+it returns is how many actors it asked the engine to destroy or stopped
+waiting for; one that was on its way out already is not counted again.
+
+`spawn` and `destroy` refuse to run while the pump is on the render thread
+(during loads), and `spawn` also while there is no hero. All three raise when
+the hook did not find the engine's calls.
+
+```lua
+local cube = "environment/template/template_cube/template_cube.actor"
+local x, y, z = rivet.position(rivet.hero())
+local handle, uid, state = rivet.spawn(cube, x, y - 1, z + 4, 45, 4, 0.5, 4)
+
+-- later, when it is in the way
+handle = handle or rivet.find_uid(uid)
+if handle then
+  rivet.destroy(handle)
+end
+```
 
 ### The game UI
 

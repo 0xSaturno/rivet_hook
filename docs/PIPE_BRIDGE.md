@@ -201,6 +201,33 @@ for overlays whether they are `loaded` and whether the `story` drives them. The
 `go`, `overlay` and `unload` targets are the rest of the line, since some level
 paths hold spaces. See [LUA_SCRIPTING.md](LUA_SCRIPTING.md#travel).
 
+## Spawned actors
+
+```bash
+python tools/rivetctl.py actor.spawn environment/template/template_cube/template_cube.actor -150 390 4
+python tools/rivetctl.py actor.spawn environment/template/template_cube/template_cube.actor -150 390 4 45 4 0.5 4
+python tools/rivetctl.py actor.spawned
+python tools/rivetctl.py actor.destroy 2113000
+python tools/rivetctl.py actor.destroy all
+```
+
+`actor.spawn <actor asset path> <x> <y> <z> [yaw] [sx sy sz]` is `rivet.spawn`:
+an actor from any `.actor`, at a position, turned `yaw` degrees and scaled per
+axis, activated. The path is one argument, so a path with a space in it has to
+go through `script.exec` and `rivet.spawn`. The command takes 4, 5 or 8
+arguments: a scale needs the yaw before it. Every number has to parse whole,
+so `-150,5` is refused. It answers with the actor's `handle`, `uid`, `state`
+and `flags`. When the asset is not loaded yet the answer has
+`"state": "loading"`, the `uid`, and `null` for `handle` and `flags`, and the
+hook spawns the actor itself once the asset is in: sending the command again
+would ask for a second actor. `actor.spawned` or `actor.uid <uid>` has the
+handle from then on. `actor.spawned` is `rivet.spawned`, with the reason the
+last waiting spawn was dropped as `last_error`, and
+`actor.destroy <handle|all>` is `rivet.destroy`, which only takes handles
+`actor.spawn` gave out and answers with `destroyed`: for `all`, how many
+actors it asked the engine to destroy or stopped waiting for. See
+[LUA_SCRIPTING.md](LUA_SCRIPTING.md#spawned-actors).
+
 ## Wire format
 
 One connection, one client at a time. Each message, request or response, is a
