@@ -656,6 +656,78 @@ if handle then
 end
 ```
 
+### Mesh collision (experimental)
+
+| | |
+|---|---|
+| `rivet.collision_stage([stage])` | `{ stage, max_stage, available, reason, measured_build, faults_caught, latched, last_error }`; with a number, sets the stage for this session |
+| `rivet.collision_status()` | what was resolved and what the engine has right now |
+| `rivet.collision_inspect(zone)` | a loaded zone's physics: system, system data, bodies, shape tree |
+| `rivet.collision_selftest([what])` | the constructor and heap tests; `what` is `"ctor"` or `"heap"` for one of them |
+| `rivet.collision_borrow(zone, dx, dy, dz)` | queue a second body out of that zone's root shape, offset from the zone's own; a zone placed by a matrix is refused |
+| `rivet.collision_bodies()` | `{ made, limit, paused, bodies }`, each body with its `state` |
+| `rivet.collision_enable(body, [on])` | queue a body into the world, or out of it when `on` is `false` |
+| `rivet.collision_disable(body)` | queue a body out of the world |
+| `rivet.collision_remove(body)` | remove a body for good; `"all"` for every one that can go right now |
+| `rivet.collision_cook(mesh, [flags])` | cook `"quad:<size>"` or a `.obj` into a shape, with no body; the answer has its `checks`, what was `measured` on it and what the hook has `written` into it |
+| `rivet.collision_shapes()` | `{ cooked, limit, max_triangles, shapes }`, each shape with its reference count |
+| `rivet.collision_release(shape)` | free a cooked shape no body uses; `"all"` for every such shape |
+| `rivet.collision_body(shape, x, y, z, [yaw])` | queue a static body made of a cooked shape |
+
+**Experimental: any of these past stage 1 can crash the game.** Collision for
+a mesh that was not shipped with the game, made while it runs: the hook hands
+triangles to the Havok mesh builder inside the exe and lets the engine make a
+static body of the result, through the queue its own zones use. None of that
+has run in the shipped game before the hook ran it, so it is switched on a
+stage at a time with `[collision] stage` in `rivet.toml`, which is 0, off,
+unless set:
+
+| stage | |
+|---|---|
+| 1 | reads only: `collision_status`, `collision_inspect` |
+| 2 | the first engine calls: `collision_selftest` |
+| 3 | a body out of a loaded zone's own shape: `collision_borrow`, `collision_bodies`, `collision_enable`, `collision_disable`, `collision_remove` |
+| 4 | the mesh cook, no body: `collision_cook`, `collision_shapes`, `collision_release` |
+| 5 | a cooked shape as a body: `collision_body` |
+
+A call above the stage raises, naming the stage it needs.
+`rivet.collision_stage(n)` moves the stage for the session only, and not
+below 3 while a body is still there. Everything but `collision_stage` and
+`collision_status` raises while the pump is on the render thread, and a fault
+inside an engine call switches the whole feature off until the game restarts,
+after which only those two still answer. Catching a fault takes the MSVC
+build of the hook: any other build stops at stage 1, and says so as
+`faults_caught`. Body, shape and stage numbers and the flags have to be whole
+numbers in range, nothing is cut down to fit. The stages, the states a body
+goes through, the `.obj` subset and the checks a mesh has to pass are
+described in [PIPE_BRIDGE.md](PIPE_BRIDGE.md#mesh-collision-experimental);
+the functions here are the bridge's commands and return its answers as
+tables, with a key that would be `null` left out.
+
+A body is made by the engine a frame or two after it was asked for, and is
+only in the world once a physics step has run, so a script polls for `"live"`
+rather than using the body in the same frame. Removing is deferred the same
+way: the body leaves the world first and is destroyed after, and a shape can
+be released once no body of it is listed any more. Remove every body before a
+warp or any other travel: `rivet.warp`, `rivet.go` by a checkpoint,
+`rivet.fly` and `rivet.rift` raise while one is still there, and
+`rivet.overlay(region, false)` while one borrows a loaded zone's shape. The
+game's own travel is not held back, and a physics world that is not the one a
+body was made in drops the body, and every cooked shape, as `"lost"`.
+
+```lua
+-- a 4 m square to stand on, three metres over the hero
+local x, y, z = rivet.position(rivet.hero())
+local shape = rivet.collision_cook("quad:4")
+if shape.usable then
+  local body = rivet.collision_body(shape.shape, x, y + 3, z)
+  rivet.log("body", body.body, body.state)
+end
+
+-- later
+rivet.collision_remove("all")
+```
+
 ### The game UI
 
 | | |
@@ -729,7 +801,8 @@ fired rather than eyeballed.
 removed. A script still runs arbitrary code inside the game process, which is
 why `[scripts] enabled` defaults to false, but it cannot reach the disk or start
 a process by accident, and `require` cannot pull a foreign dll into the game's
-address space.
+address space. The exception is `rivet.collision_cook`, which opens the `.obj`
+a script names and reads it, and only from `[collision] stage` 4 on.
 
 ## Example
 

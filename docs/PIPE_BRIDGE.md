@@ -228,6 +228,144 @@ last waiting spawn was dropped as `last_error`, and
 actors it asked the engine to destroy or stopped waiting for. See
 [LUA_SCRIPTING.md](LUA_SCRIPTING.md#spawned-actors).
 
+## Mesh collision (experimental)
+
+**This is experimental and can crash the game.** The game ships its collision
+cooked, and the hook cannot write that format. Instead it hands triangles to
+the Havok mesh builder that is linked into the exe, and gets a static body for
+the result through the queue the engine's own zones load their physics with.
+The builder has no caller in the shipped game, so the first time it runs is
+when the hook runs it. Use a save you have a copy of, try things above ground
+the game already has, and remove every test body before travelling anywhere.
+
+It is off unless `rivet.toml` says otherwise, and comes on a stage at a time:
+
+```toml
+[collision]
+stage = 0
+max_triangles = 2048
+```
+
+| stage | adds | what can go wrong |
+|---|---|---|
+| 0 | nothing. The exe is not even scanned | |
+| 1 | `collision.status`, `collision.inspect`: reads only | nothing, no engine call is made |
+| 2 | `collision.selftest`: three constructors on hook buffers, one heap block taken and given back | a wrong address or prototype |
+| 3 | `collision.borrow`, `collision.bodies`, `collision.enable`, `collision.disable`, `collision.remove`: a second body out of a loaded zone's own shape | a wrong body description, read by the engine a frame later |
+| 4 | `collision.cook`, `collision.shapes`, `collision.release`: the mesh cook, no body | the builder itself |
+| 5 | `collision.body`: a cooked shape as a body | a shape the engine does not like |
+
+`collision.stage [0-5]` reads the stage or sets it for the session, without a
+restart; the file keeps what it has. The first time the stage leaves 0 the hook
+scans the exe for the engine calls, once, which can be felt as a short hitch.
+A command above the stage is refused with the stage it needs, and the stage
+does not go below 3 while a body is still there, since nothing would follow it
+any more. Every engine call is made on the game thread only, after checking
+that the thread has a Havok memory router and that there is a physics world,
+and a call that queues something also that physics is switched on and the
+queue has room. Each has a line in `rivet.log` written before it, so a crash
+names its step. A fault in an engine call is caught and switches the whole
+feature off until the game restarts, since nothing is known about the state
+the engine was left in: from then on only `collision.stage` and
+`collision.status` answer. Catching a fault takes the MSVC build of the hook,
+so any other build stops at stage 1 (`faults_caught` in `collision.stage`).
+The layouts were measured on one build of the exe; on any other only stage 1
+works.
+
+```bash
+python tools/rivetctl.py collision.stage 1
+python tools/rivetctl.py collision.status
+python tools/rivetctl.py collision.inspect navmesh_test_overlay
+python tools/rivetctl.py collision.stage 2
+python tools/rivetctl.py collision.selftest ctor
+python tools/rivetctl.py collision.selftest heap
+python tools/rivetctl.py collision.stage 3
+python tools/rivetctl.py collision.borrow navmesh_test_overlay 0 30 0
+python tools/rivetctl.py collision.bodies
+python tools/rivetctl.py collision.disable 1
+python tools/rivetctl.py collision.enable 1
+python tools/rivetctl.py collision.remove 1
+python tools/rivetctl.py collision.stage 4
+python tools/rivetctl.py collision.cook quad:4 0x6BF
+python tools/rivetctl.py collision.cook mods/mymap/floor.obj
+python tools/rivetctl.py collision.shapes
+python tools/rivetctl.py collision.stage 5
+python tools/rivetctl.py collision.body 2 1204 121 -840
+python tools/rivetctl.py collision.remove all
+python tools/rivetctl.py collision.release all
+```
+
+`collision.status` is what was found and what the engine has right now: how
+often each signature matched, the cross checks between them, the class names
+behind the vtables, the Havok memory router of the thread that answered, the
+world, whether physics is on and paused, the two queues and the last error.
+`collision.inspect <zone>` walks a loaded zone's physics: the zone slot, the
+system and system data, materials, body descriptions, the bodies in the world
+and the shape tree with types, user data, boxes and triangle counts. A mesh's
+data runs come split into `tag`, `first` and `count` next to the `raw` value,
+the split being a reading of the shipped files. The zone is named as for
+`level.go`. Both only read.
+
+`collision.selftest [ctor|heap]` answers with the bytes each constructor left
+and how they differ from what it is known to write; with no argument it runs
+both, and skips the heap when a constructor failed.
+
+`collision.borrow <zone> <dx> <dy> <dz>` queues a second static body made of
+that zone's root shape, offset from the zone's own. A zone placed by a matrix
+(`placed_by_matrix` in `collision.inspect`) is refused, its own body being
+somewhere else than its description was written for. The shape still belongs
+to the zone, so `level.unload` is refused while such a body exists, and a body
+whose zone goes anyway is taken out of the world and listed as `orphaned`.
+`level.warp`, `level.go` by a checkpoint, `level.fly` and `level.rift` are
+refused while any body made here exists, borrowed or cooked: none has been
+through a planet change yet. The game's own travel is not held back by any of
+this, so remove the bodies before using it too.
+
+`collision.bodies` lists the bodies with their `state`: `queued` until the
+engine has made the body, `created` until a physics step has put it in the
+world (a paused game stops there), then `live`; `disabling` and `disabled`
+after `collision.disable <body>`, which `collision.enable <body>` undoes;
+`removing` after `collision.remove <body|all>`. A removal takes the body out
+of the world first, the way a zone's physics is switched off, and destroys it
+once the engine has done that, so the body stays listed for a few frames.
+Three more states are bodies the hook leaves alone, each with the reason as
+its `error`: `orphaned`; `broken`, when what the engine made of the
+description is not the one body it should be; and `lost`, when the physics
+world is another than the one the body was made in, or the body's system is
+not the one the engine made for it. The world is looked at on every pump, and
+when it has changed every body and every cooked shape is dropped as `lost`
+with no call made on it. An `orphaned` or `broken` body cannot be removed any
+more: the commands it holds back say to restart the game.
+
+`collision.cook <mesh> [flags]` cooks a mesh and makes no body. `mesh` is
+`quad:<size>`, a flat square of that many metres around the origin, or a
+Wavefront `.obj`, relative to the game's folder unless the path is absolute;
+the path is one argument, so one with a space in it has to go through
+`script.exec`. Of the file only `v x y z` and `f a b c` lines are read, with
+1 based or negative indices and anything after a `/` ignored; faces have to be
+triangles, wound like the game's own, so that `(b - a) x (c - a)` points out
+of the walkable side. A mesh is refused when a coordinate is not finite or
+more than 4096 from the origin, when a triangle has two corners within a
+centimetre of each other or all three in a line, or when it has more than
+`max_triangles` triangles (which can be raised to 65536): the cook runs inside
+a frame, and a large mesh is a visible hitch. `flags` are the gameplay flags
+every triangle gets, `0x43F` unless given, `0x7FF` at most and without
+`0x100`; they are decimal or `0x` hex. The vertices and triangles reach the
+builder in the order the mesh has them, less the vertices no triangle uses.
+The answer has the `checks` the new shape passed or failed and what was
+`measured` on it as the builder left it, in the same form `collision.inspect`
+uses, so the two can be compared; `written` is the user data and tag codec the
+hook then wrote into a shape that passed. A shape that failed a check is
+`rejected` and no body is made of it. `collision.shapes` lists the cooked
+shapes with their reference counts, and `collision.release <shape|all>` frees
+one no body uses.
+
+`collision.body <shape> <x> <y> <z> [yaw]` queues a static body made of a
+cooked shape at a position, turned `yaw` degrees about the up axis. It is
+listed, switched and removed like a borrowed one. What the engine reads of a
+body is kept until the game exits, so a session makes at most 256 bodies and
+256 shapes. See [LUA_SCRIPTING.md](LUA_SCRIPTING.md#mesh-collision-experimental).
+
 ## Wire format
 
 One connection, one client at a time. Each message, request or response, is a
