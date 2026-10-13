@@ -251,6 +251,23 @@ namespace rivet_hook {
 	// the controller's state; anything but 0 (idle) is a shift in progress
 	constexpr uint32_t PASSIVE_SHIFT_STATE = 0x48;
 
+	// spawned actors. Actor::Activate (actor): hatches the actor when it is not,
+	// sets Activated and UpdateEnabled, puts its scene object in the scene and
+	// activates every live component. it leaves an actor alone that is active,
+	// being destroyed, or halfway through either
+	MAKE_SIGNATURE(ACTOR_ACTIVATE, "48 89 5C 24 10 48 89 6C 24 18 56 57 41 56 48 81 EC 80 00 00 00 48 8B F9 48 83 C1 30 48 8D 94 24 A0 00 00 00 E8 ?? ?? ?? ?? 8B 4F 10")
+	// the scene's level unload, taking down every actor flagged to go with the
+	// level in three calls: Actor::Deactivate (actor), Actor::Destroy (actor) ->
+	// true, and the teardown itself. Destroy only queues the actor, for the scene
+	// to tear down at the start of an actor update. the teardown frees the actor
+	// there and then, and is the scene's to call, nobody else's
+	MAKE_SIGNATURE(LEVEL_UNLOAD_ACTOR_DESTROY, "8B 43 10 25 00 03 00 00 3D 00 03 00 00 75 18 48 8B CB E8 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? 48 8B CB E8")
+
+	constexpr uint32_t LEVEL_UNLOAD_ACTOR_DEACTIVATE_ADDRESS = 0x13;
+	constexpr uint32_t LEVEL_UNLOAD_ACTOR_DESTROY_ADDRESS = 0x1B;
+	// Destroy is sub rsp, 28; mov rdx, rcx; lea rcx, [scene]; call
+	constexpr uint32_t ACTOR_DESTROY_SCENE_ADDRESS = 0xA;
+
 	// the two planet menu script nodes that hand the travel checkpoints to the
 	// tunnel script: lea of a 256 byte name buffer, then SetVarString(plugs,
 	// buffer, "CheckpointName"). matches twice: the tunnel checkpoint buffer, and
