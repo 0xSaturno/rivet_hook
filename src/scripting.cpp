@@ -33,6 +33,7 @@ extern "C" {
 #include "configs.hpp"
 #include "script_signal.hpp"
 #include "travel.hpp"
+#include "spawn.hpp"
 #include "game/scene_manager.hpp"
 #include "game_thread.hpp"
 #include "runtime.hpp"
@@ -2297,6 +2298,122 @@ namespace rivet_hook::scripting {
 		return 1;
 	}
 
+	// -------------------------------------------------------- spawned actors --
+
+	// rivet.spawn(path, x, y, z, [yaw], [sx, sy, sz]) -> handle, uid, state. an
+	// actor from that .actor at a position, turned yaw degrees about the up axis
+	// and scaled per axis, activated. while the asset still loads the handle is
+	// nil and the state "loading": the pump spawns the actor once the asset is in,
+	// and rivet.find_uid(uid) or rivet.spawned() has its handle from then on
+	static auto
+	l_spawn(lua_State *L) -> int {
+		const auto *path = luaL_checkstring(L, 1);
+		float position[3];
+		for (auto axis = 0; axis < 3; ++axis) {
+			position[axis] = static_cast<float>(luaL_checknumber(L, 2 + axis));
+		}
+
+		const auto yaw = static_cast<float>(luaL_optnumber(L, 5, 0.0));
+		float scale[3] = { 1.0f, 1.0f, 1.0f };
+		if (!lua_isnoneornil(L, 6)) {
+			for (auto axis = 0; axis < 3; ++axis) {
+				scale[axis] = static_cast<float>(luaL_checknumber(L, 6 + axis));
+			}
+		}
+
+		spawn::Info info {};
+		const char *reason = "refused";
+		if (spawn::request(path, position, yaw, scale, info, &reason) == spawn::Result::Failed) {
+			luaL_error(L, "%s", reason);
+		}
+
+		if (info.handle != 0) {
+			lua_pushinteger(L, info.handle);
+		} else {
+			lua_pushnil(L);
+		}
+
+		char uid[24];
+		_snprintf_s(uid, sizeof(uid), _TRUNCATE, "%016llx", info.uid);
+		lua_pushstring(L, uid);
+		lua_pushstring(L, spawn::state_name(info.state));
+		return 3;
+	}
+
+	// rivet.destroy(handle) -> true, rivet.destroy("all") -> how many. asks the
+	// engine to destroy an actor rivet.spawn made; any other handle raises.
+	// "all" also drops the spawns still loading, and counts what it asked to go
+	// or dropped
+	static auto
+	l_destroy(lua_State *L) -> int {
+		const char *reason = "refused";
+		if (lua_type(L, 1) == LUA_TSTRING && strcmp(lua_tostring(L, 1), "all") == 0) {
+			int32_t destroyed = 0;
+			if (!spawn::destroy_all(destroyed, &reason)) {
+				luaL_error(L, "%s", reason);
+			}
+
+			lua_pushinteger(L, destroyed);
+			return 1;
+		}
+
+		if (!spawn::destroy(static_cast<uint32_t>(luaL_checkinteger(L, 1)), &reason)) {
+			luaL_error(L, "%s", reason);
+		}
+
+		lua_pushboolean(L, 1);
+		return 1;
+	}
+
+	// rivet.spawned() -> { { handle, uid, state, path, x, y, z, yaw, sx, sy, sz },
+	// ... } of the actors rivet.spawn made that are still there. handle is left
+	// out while state is "loading"
+	static auto
+	l_spawned(lua_State *L) -> int {
+		// an empty list would read as nothing spawned
+		if (const auto *why = spawn::unavailable_reason(); why[0] != '\0') {
+			luaL_error(L, "%s", why);
+		}
+
+		// plain data, filled before anything below can raise
+		static spawn::Info found[spawn::MAX_SPAWNED];
+		const auto count = spawn::list(found, spawn::MAX_SPAWNED);
+
+		lua_createtable(L, count, 0);
+		for (int32_t i = 0; i < count; ++i) {
+			const auto &info = found[i];
+			lua_createtable(L, 0, 11);
+			if (info.handle != 0) {
+				lua_pushinteger(L, info.handle);
+				lua_setfield(L, -2, "handle");
+			}
+
+			char uid[24];
+			_snprintf_s(uid, sizeof(uid), _TRUNCATE, "%016llx", info.uid);
+			lua_pushstring(L, uid);
+			lua_setfield(L, -2, "uid");
+			lua_pushstring(L, spawn::state_name(info.state));
+			lua_setfield(L, -2, "state");
+			lua_pushstring(L, info.path);
+			lua_setfield(L, -2, "path");
+
+			constexpr const char *POSITION[3] = { "x", "y", "z" };
+			constexpr const char *SCALE[3] = { "sx", "sy", "sz" };
+			for (auto axis = 0; axis < 3; ++axis) {
+				lua_pushnumber(L, info.position[axis]);
+				lua_setfield(L, -2, POSITION[axis]);
+				lua_pushnumber(L, info.scale[axis]);
+				lua_setfield(L, -2, SCALE[axis]);
+			}
+
+			lua_pushnumber(L, info.yaw);
+			lua_setfield(L, -2, "yaw");
+			lua_rawseti(L, -2, i + 1);
+		}
+
+		return 1;
+	}
+
 	static const luaL_Reg g_api[] = {
 		{ "log", l_log },
 		{ "on_frame", l_on_frame },
@@ -2356,6 +2473,9 @@ namespace rivet_hook::scripting {
 		{ "fly", l_fly },
 		{ "rift", l_rift },
 		{ "overlay", l_overlay },
+		{ "spawn", l_spawn },
+		{ "destroy", l_destroy },
+		{ "spawned", l_spawned },
 		{ nullptr, nullptr },
 	};
 
