@@ -22,6 +22,7 @@
 #include "hero_look.hpp"
 #include "configs.hpp"
 #include "script_signal.hpp"
+#include "spawn.hpp"
 #include "travel.hpp"
 #include "overlay.hpp"
 #include "scripting.hpp"
@@ -300,6 +301,7 @@ namespace rivet_hook {
 			configs::init();
 			script_signal::init();
 			travel::init();
+			spawn::init();
 			bridge::init();
 			scripting::init();
 			g_output << "[rivet] starting ddl thread\n";

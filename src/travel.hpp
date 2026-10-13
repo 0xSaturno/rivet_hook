@@ -9,6 +9,11 @@
 
 #include <nlohmann/json.hpp>
 
+namespace rivet_hook::game {
+	struct Actor;
+	struct Asset;
+} // namespace rivet_hook::game
+
 // travel between planets and around them. every planet is a region of one
 // level, and the level names its spawn points: checkpoints. warping to one is
 // the engine's own checkpoint warp, the one level scripts use: the screen
@@ -93,4 +98,27 @@ namespace rivet_hook::travel {
 	// warps do. game thread only.
 	auto
 	warp(uint32_t checkpoint, const char **reason) -> bool;
+
+	// whether the engine's actor spawn, the one the rift's own portals come from,
+	// was found. the two calls below are that spawn, for the spawn module
+	auto
+	actor_spawn_ready() -> bool;
+
+	// asks the actor asset manager for the .actor at path. the asset comes back
+	// at once and loads in the background; its status says where it is, and
+	// every call takes one more reference on it. false when the call was not
+	// found or faulted. game thread only.
+	auto
+	load_actor_asset(const char *path, game::Asset **out) -> bool;
+
+	// an actor from an actor asset by its id, at a world matrix (rows right, up,
+	// forward, position; a row's length is that axis' scale), with a uid. the
+	// caller has to have seen the asset Loaded: the engine does not check, and
+	// hatches the actor from whatever the asset holds. it comes back hatched and
+	// not activated, or null when the actor asset manager does not know the id
+	// or the scene has no slot left. false when the call was not found or
+	// faulted, and after a fault out can still hold an actor the engine made.
+	// game thread only.
+	auto
+	spawn_actor(uint64_t asset, const float (*matrix)[4], uint64_t uid, game::Actor **out) -> bool;
 } // namespace rivet_hook::travel

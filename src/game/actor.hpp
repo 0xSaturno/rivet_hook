@@ -50,9 +50,14 @@ namespace rivet_hook::game {
 		constexpr uint32_t Activated = 1u << 0;
 		constexpr uint32_t Template = 1u << 2;
 		constexpr uint32_t StartedActive = 1u << 3;
+		// the scene destroys the actor when the level unloads
+		constexpr uint32_t DestroyOnUnloadLevel = 1u << 8;
 		// the slot is in use. freed slots keep their stale scene object pointer
 		constexpr uint32_t Allocated = 1u << 9;
 		constexpr uint32_t Destroying = 1u << 10;
+		// set for as long as an activate or a deactivate runs. neither starts on
+		// an actor that has it
+		constexpr uint32_t IsActivatingOrDeactivating = 1u << 12;
 		// components tick
 		constexpr uint32_t UpdateEnabled = 1u << 13;
 	} // namespace ActorFlag

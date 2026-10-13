@@ -21,7 +21,9 @@ namespace rivet_hook::scene_query {
 
 	// the actor's uid, 0 when it has none. zone placed actors have bit 63 set and
 	// keep their uid across loads and launches, which handles do not; spawned
-	// actors, the hero among them, get a runtime uid without it.
+	// actors, the hero among them, get a runtime uid without it. the actors the
+	// hook spawns itself are given one with bit 63 from a range of its own
+	// (ee5f7eed...), good for the session only.
 	auto
 	uid_of(const game::Actor *actor) -> uint64_t;
 

@@ -1401,9 +1401,19 @@ namespace rivet_hook::travel {
 		return count;
 	}
 
+	auto
+	actor_spawn_ready() -> bool {
+		return g_spawn_actor != nullptr;
+	}
+
 	// the engine calls on their own, so a fault is caught with nothing to unwind
-	static auto
-	call_load_asset(const char *path, Asset **out) -> bool {
+	auto
+	load_actor_asset(const char *path, Asset **out) -> bool {
+		*out = nullptr;
+		if (g_spawn_actor == nullptr) {
+			return false;
+		}
+
 #ifdef _MSC_VER
 		__try {
 #endif
@@ -1416,8 +1426,13 @@ namespace rivet_hook::travel {
 #endif
 	}
 
-	static auto
-	call_spawn(const uint64_t asset, const float (*matrix)[4], const uint64_t uid, Actor **out) -> bool {
+	auto
+	spawn_actor(const uint64_t asset, const float (*matrix)[4], const uint64_t uid, Actor **out) -> bool {
+		*out = nullptr;
+		if (g_spawn_actor == nullptr) {
+			return false;
+		}
+
 #ifdef _MSC_VER
 		__try {
 #endif
@@ -1476,7 +1491,7 @@ namespace rivet_hook::travel {
 		}
 
 		Asset *loaded = nullptr;
-		if (!call_load_asset(RIFT_PORTAL_ASSETS[which], &loaded) || loaded == nullptr || !ddl::is_readable(loaded, sizeof(Asset))) {
+		if (!load_actor_asset(RIFT_PORTAL_ASSETS[which], &loaded) || loaded == nullptr || !ddl::is_readable(loaded, sizeof(Asset))) {
 			asset = nullptr;
 			return AssetStatus::Invalid;
 		}
@@ -1521,7 +1536,7 @@ namespace rivet_hook::travel {
 			};
 
 			Actor *actor = nullptr;
-			if (!call_spawn(g_rift_assets[follows ? 0 : 1]->assetId, matrix, RIFT_PORTAL_UID + static_cast<uint64_t>(i), &actor) || actor == nullptr) {
+			if (!spawn_actor(g_rift_assets[follows ? 0 : 1]->assetId, matrix, RIFT_PORTAL_UID + static_cast<uint64_t>(i), &actor) || actor == nullptr) {
 				g_rift_portals[i] = 0;
 				return false;
 			}

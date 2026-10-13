@@ -19,6 +19,7 @@
 #include "runtime.hpp"
 #include "scripting.hpp"
 #include "signature.hpp"
+#include "spawn.hpp"
 #include "travel.hpp"
 
 namespace rivet_hook::game_thread {
@@ -82,6 +83,7 @@ namespace rivet_hook::game_thread {
 		camera::pump();
 		hero_look::pump();
 		travel::pump();
+		spawn::pump();
 	}
 
 	static auto
