@@ -5,6 +5,7 @@
 #include <intrin.h>
 
 #include <atomic>
+#include <charconv>
 #include <cmath>
 #include <mutex>
 #include <string>
@@ -20,6 +21,7 @@
 #include "events.hpp"
 #include "time_scale.hpp"
 #include "camera.hpp"
+#include "collision.hpp"
 #include "hud.hpp"
 #include "vanity.hpp"
 #include "hero_look.hpp"
@@ -2102,6 +2104,177 @@ namespace rivet_hook::bridge {
 		return ok(result);
 	}
 
+	// ------------------------------------------------------------ collision --
+
+	// a number that is all of its argument, as actor.spawn takes them
+	static auto
+	parse_whole(const std::string &text, float &out) -> bool {
+		try {
+			size_t used = 0;
+			out = std::stof(text, &used);
+			return used == text.size();
+		} catch (const std::exception &) {
+			return false;
+		}
+	}
+
+	// a body, a shape or a stage: decimal, not negative, and never wrapped into
+	// range, since the number is the last thing looked at before an engine
+	// call. hex lets gameplay flags be written 0x43F as well
+	static auto
+	parse_whole(const std::string &text, int32_t &out, const bool hex = false) -> bool {
+		const auto *first = text.data();
+		const auto *last = first + text.size();
+		auto base = 10;
+		if (hex && text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+			first += 2;
+			base = 16;
+		}
+
+		int32_t value = 0;
+		const auto result = std::from_chars(first, last, value, base);
+		if (result.ec != std::errc {} || result.ptr != last || value < 0) {
+			return false;
+		}
+
+		out = value;
+		return true;
+	}
+
+	// collision.*: the experimental runtime mesh collision, each command behind
+	// the stage it needs. the answers are the module's own json
+	static auto
+	cmd_collision(const std::vector<std::string> &args) -> std::string {
+		const auto &command = args[0];
+		const char *reason = nullptr;
+		nlohmann::json result;
+		const auto answer = [&result, &reason](const bool worked) {
+			return worked ? ok(result) : error(reason != nullptr ? reason : "refused");
+		};
+
+		if (command == "collision.stage") {
+			int32_t stage = 0;
+			if (args.size() > 2 || (args.size() == 2 && !parse_whole(args[1], stage))) {
+				return error("usage: collision.stage [0-5]");
+			}
+
+			if (args.size() == 2 && !collision::set_stage(stage, &reason)) {
+				return error(reason != nullptr ? reason : "refused");
+			}
+
+			return ok(collision::stage_info());
+		}
+
+		if (command == "collision.status") {
+			return answer(collision::status(result, &reason));
+		}
+
+		if (command == "collision.bodies") {
+			return answer(collision::bodies(result, &reason));
+		}
+
+		if (command == "collision.shapes") {
+			return answer(collision::shapes(result, &reason));
+		}
+
+		if (command == "collision.selftest") {
+			if (args.size() > 2) {
+				return error("usage: collision.selftest [ctor|heap]");
+			}
+
+			return answer(collision::selftest(args.size() > 1 ? args[1].c_str() : "", result, &reason));
+		}
+
+		// a zone is the rest of its arguments: some level paths hold spaces
+		const auto joined = [&args](const size_t end) {
+			std::string text;
+			for (size_t i = 1; i < end; ++i) {
+				text += (i > 1 ? " " : "") + args[i];
+			}
+
+			return text;
+		};
+
+		if (command == "collision.inspect") {
+			if (args.size() < 2) {
+				return error("usage: collision.inspect <zone path, fragment or asset id>");
+			}
+
+			return answer(collision::inspect(joined(args.size()).c_str(), result, &reason));
+		}
+
+		if (command == "collision.borrow") {
+			float offset[3] {};
+			if (args.size() < 5 || !parse_whole(args[args.size() - 3], offset[0]) || !parse_whole(args[args.size() - 2], offset[1]) || !parse_whole(args[args.size() - 1], offset[2])) {
+				return error("usage: collision.borrow <zone path, fragment or asset id> <dx> <dy> <dz>");
+			}
+
+			return answer(collision::borrow(joined(args.size() - 3).c_str(), offset, result, &reason));
+		}
+
+		if (command == "collision.enable" || command == "collision.disable") {
+			int32_t body = 0;
+			if (args.size() != 2 || !parse_whole(args[1], body)) {
+				return error("usage: " + command + " <body>");
+			}
+
+			return answer(collision::enable(body, command == "collision.enable", result, &reason));
+		}
+
+		if (command == "collision.remove") {
+			int32_t body = 0;
+			if (args.size() == 2 && args[1] == "all") {
+				return answer(collision::remove_all(result, &reason));
+			}
+
+			if (args.size() != 2 || !parse_whole(args[1], body)) {
+				return error("usage: collision.remove <body|all>");
+			}
+
+			return answer(collision::remove(body, result, &reason));
+		}
+
+		if (command == "collision.cook") {
+			int32_t flags = collision::DEFAULT_FLAGS;
+			if (args.size() < 2 || args.size() > 3 || (args.size() == 3 && !parse_whole(args[2], flags, true))) {
+				return error("usage: collision.cook <quad:size | file.obj> [flags]");
+			}
+
+			return answer(collision::cook(args[1].c_str(), static_cast<uint32_t>(flags), result, &reason));
+		}
+
+		if (command == "collision.release") {
+			int32_t shape = 0;
+			if (args.size() == 2 && args[1] == "all") {
+				return answer(collision::release_all(result, &reason));
+			}
+
+			if (args.size() != 2 || !parse_whole(args[1], shape)) {
+				return error("usage: collision.release <shape|all>");
+			}
+
+			return answer(collision::release(shape, result, &reason));
+		}
+
+		if (command == "collision.body") {
+			int32_t shape = 0;
+			float values[4] {};
+			if ((args.size() != 5 && args.size() != 6) || !parse_whole(args[1], shape)) {
+				return error("usage: collision.body <shape> <x> <y> <z> [yaw]");
+			}
+
+			for (size_t i = 2; i < args.size(); ++i) {
+				if (!parse_whole(args[i], values[i - 2])) {
+					return error("could not parse a number");
+				}
+			}
+
+			return answer(collision::add(shape, values, values[3], result, &reason));
+		}
+
+		return error("unknown command: " + command);
+	}
+
 	// runs on the engine thread, inside pump
 	static auto
 	execute(const std::string &line) -> std::string {
@@ -2231,6 +2404,10 @@ namespace rivet_hook::bridge {
 
 		if (command == "config.list" || command == "config.get" || command == "config.set") {
 			return cmd_config(args);
+		}
+
+		if (command.starts_with("collision.")) {
+			return cmd_collision(args);
 		}
 
 		if (command == "vanity.equip" || command == "vanity.owns") {
@@ -2431,7 +2608,7 @@ namespace rivet_hook::bridge {
 		if (args[0] == "help") {
 			nlohmann::json result;
 			result["commands"] = nlohmann::json::array_t {
-				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.near <x> <y> <z> <radius> [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "actor.spawn <actor asset path> <x> <y> <z> [yaw] [sx sy sz]", "actor.destroy <handle|all>", "actor.spawned", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]", "hud.notify <text>", "hud.message <type> <seconds> <text>", "vanity.equip <bundle>", "vanity.owns <bundle>", "hero.look [.actor or .model path] [anims]", "hero.models [filter]", "hero.play_as <ratchet|clank|rivet|kit>", "hero.apply_on_launch <on|off>","hero.restore", "config.list [type] [limit]", "config.get <config>", "config.set <config> <field.path> <value>", "script.nodes [filter] [limit]", "script.node <component>", "script.signal <component> <plug>", "script.signal <actor> <component class> <plug> [nth]", "level.checkpoints [filter] [limit]", "level.warp <checkpoint name|0xhash>", "level.fly <destination> [via tunnel]", "level.rift <checkpoint | x y z>", "level.regions [filter] [limit]", "level.zones <filter> [limit]", "level.go <zone>", "level.overlay <region>", "level.unload <region>"
+				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.near <x> <y> <z> <radius> [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "actor.spawn <actor asset path> <x> <y> <z> [yaw] [sx sy sz]", "actor.destroy <handle|all>", "actor.spawned", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]", "hud.notify <text>", "hud.message <type> <seconds> <text>", "vanity.equip <bundle>", "vanity.owns <bundle>", "hero.look [.actor or .model path] [anims]", "hero.models [filter]", "hero.play_as <ratchet|clank|rivet|kit>", "hero.apply_on_launch <on|off>","hero.restore", "config.list [type] [limit]", "config.get <config>", "config.set <config> <field.path> <value>", "script.nodes [filter] [limit]", "script.node <component>", "script.signal <component> <plug>", "script.signal <actor> <component class> <plug> [nth]", "level.checkpoints [filter] [limit]", "level.warp <checkpoint name|0xhash>", "level.fly <destination> [via tunnel]", "level.rift <checkpoint | x y z>", "level.regions [filter] [limit]", "level.zones <filter> [limit]", "level.go <zone>", "level.overlay <region>", "level.unload <region>", "collision.stage [0-5]", "collision.status", "collision.inspect <zone>", "collision.selftest [ctor|heap]", "collision.borrow <zone> <dx> <dy> <dz>", "collision.bodies", "collision.enable <body>", "collision.disable <body>", "collision.remove <body|all>", "collision.cook <quad:size | file.obj> [flags]", "collision.shapes", "collision.release <shape|all>", "collision.body <shape> <x> <y> <z> [yaw]"
 			};
 			return ok(result);
 		}
