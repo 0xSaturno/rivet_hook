@@ -300,4 +300,88 @@ namespace rivet_hook {
 	constexpr uint32_t ACTOR_ASSET_MANAGER_ADDRESS = 0x3;
 	constexpr uint32_t SWAPCHAIN_VTABLE_ADDRESS = 0x3;
 	constexpr uint32_t SWAPCHAIN_VTABLE_DTOR = 0x0;
+
+	// mesh collision, see collision.hpp. scanned for only once [collision] stage
+	// is set, and every one of them has to match exactly once: a wrong address
+	// here is a call into the middle of the engine.
+	//
+	// inside the one function of the exe that cooks a mesh shape: the call of
+	// the mesh cinfo's base constructor, the load of the tls index Havok keeps a
+	// thread's memory router under, and the lea of the vtable of the cinfo that
+	// reads its triangles out of a plain geometry struct
+	MAKE_SIGNATURE(HKNP_MESH_CINFO_SITE, "E8 ?? ?? ?? ?? 8B 0D ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 89 45 30 48 8D 44 24 30 48 89 45 70")
+	// hknpCompressedMeshShapeCinfo's constructor (cinfo) -> cinfo. writes the
+	// build defaults and the base vtable, whose triangle accessors are pure
+	MAKE_SIGNATURE(HKNP_MESH_CINFO_CTOR, "48 8D 05 ?? ?? ?? ?? 48 89 01 33 C0 89 41 08 C6 41 0C 01 C7 41 10 0A D7 23 3C C6 41 14 01")
+	// hknpCompressedMeshShape's constructor (0x90 bytes off the Havok heap,
+	// cinfo) -> shape, with one reference. the cook: it reads every vertex and
+	// triangle through the cinfo before it returns, and keeps nothing of it
+	MAKE_SIGNATURE(HKNP_MESH_SHAPE_CTOR, "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 20 48 8B FA 48 8B D9 BA 09 00 00 00 E8 ?? ?? ?? ?? 33 ED 48 8D 05")
+	// hkReferencedObject::removeReference (object). the last reference runs the
+	// object's deleting destructor, which frees on the calling thread's heap
+	MAKE_SIGNATURE(HK_REMOVE_REFERENCE, "66 83 79 10 00 4C 8B C1 74 5F 41 8B 40 10 33 C9 44 8D 88 00 00 FF FF F0 45 0F B1 48 10 74 37 90 B8 01 00 00 00 D3 E0 85 C0 7E 0D 0F 1F 44 00 00")
+	// hknpBodyCinfo's constructor (cinfo) -> cinfo: a static body at the origin.
+	// the attached body index the system data keeps past it is left alone
+	MAKE_SIGNATURE(HKNP_BODY_CINFO_CTOR, "48 89 5C 24 08 57 48 83 EC 20 33 FF 0F 57 C9 48 89 79 18 48 8B D9 48 89 79 78 48 89 B9 90 00 00 00 48 89 39 89 79 08 66 89 79 0C 89 79 10")
+	// hknpMaterial's constructor (material) -> material: the one material every
+	// shipped zone body has
+	MAKE_SIGNATURE(HKNP_MATERIAL_CTOR, "40 53 48 83 EC 20 48 8B D9 48 8D 05 ?? ?? ?? ?? 33 C9 33 D2 48 89 4B 08 C7 43 10 FF FF 01 00 44 8D 42 48 48 89 03 48 89 4B 20 48 8D 4B 28")
+	// hknpPhysicsSystemData's destructor putting its vtable back
+	MAKE_SIGNATURE(HKNP_SYSTEM_DATA_VTABLE_SITE, "48 8D 05 ?? ?? ?? ?? 48 8B D9 48 89 01 48 83 C1 68 E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 8B 53 60 48 8B")
+	// a zone switching its physics on (zone), never called from here. it loads
+	// the engine's physics system and calls the enable and the load queue
+	// below, which have to be where their own signatures are
+	MAKE_SIGNATURE(ZONE_ENABLE_PHYSICS, "40 53 48 83 EC 20 F6 81 88 01 00 00 10 48 8B D9 75 43 48 8B 91 B8 01 00 00 48 85 D2 74 30 48 8B 81 C0 01 00 00 4C 8B C1 48 8D 0D")
+	// (physics system, physics root, zone): queues the Havok system data a
+	// zone's physics root holds. the engine makes a system of it and adds its
+	// bodies to the world at its own point in the frame, and stores the system
+	// in the zone. returns without a word when the queue is full
+	MAKE_SIGNATURE(PHYSICS_DELAY_LOAD_ZONE, "48 89 5C 24 08 48 89 7C 24 10 8B 81 44 EC 01 00 49 8B F8 4C 8B DA 48 8B D9 39 81 20 EC 01 00 0F 8D ?? ?? ?? ?? 48 85 D2 0F 84 ?? ?? ?? ?? 33 C0")
+	// (physics system, hknpPhysicsSystem, zone): queues putting a system's
+	// bodies back into the world
+	MAKE_SIGNATURE(PHYSICS_DELAY_ENABLE_ZONE, "48 63 81 20 EC 01 00 4C 8B D1 3B 81 44 EC 01 00 7D 44 4C 8D 0C 40 48 8B 81 18 EC 01 00 4A 89 54 C8 08 48 63 81 20 EC 01 00 48 8D 14 40")
+	// (physics system, hknpPhysicsSystem, file or null): queues taking a
+	// system's bodies out of the world, the system kept. what a zone does when
+	// its physics is switched off
+	MAKE_SIGNATURE(PHYSICS_DELAY_DISABLE_ZONE, "4C 63 91 30 EC 01 00 4C 8B D9 44 3B 91 44 EC 01 00 7D 6A 45 33 C9 45 85 D2 7E 1E 48 8B 81 28 EC 01 00 48 39 10 75 06 4C 39 40 08 74")
+	// the same, and then the system is let go of, which destroys its bodies.
+	// nothing in the exe calls it, though the frame runs what it queues
+	MAKE_SIGNATURE(PHYSICS_DELAY_UNLOAD_ZONE, "4C 63 91 30 EC 01 00 4C 8B D9 44 3B 91 44 EC 01 00 7D 6A 45 33 C9 45 85 D2 7E 1E 48 8B 81 28 EC 01 00 48 39 10 75 06 4C 3B 40 08 74 51 41 FF C1")
+	// a physics hit looking its zone up: lea of the zone manager, then the
+	// bounds checked (manager, index) -> zone
+	MAKE_SIGNATURE(ZONE_MANAGER_SITE, "48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 85 C0 74 5B 48 8B C8 0F BA E6 0F")
+	// the frame working the queues off: the byte physics is switched on with,
+	// the physics system, and the call
+	MAKE_SIGNATURE(PHYSICS_FRAME_SITE, "80 3D ?? ?? ?? ?? 00 74 0C 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 80 3D ?? ?? ?? ?? 00 74 1B")
+	// the first half of the physics step (physics system), never called from
+	// here. it skips the step on a paused byte and a timestep of zero
+	MAKE_SIGNATURE(PHYSICS_UPDATE_FIRST, "40 53 48 83 EC 20 48 8B D9 48 81 C1 70 EC 01 00 E8 ?? ?? ?? ?? 80 3D ?? ?? ?? ?? 00 0F 85 ?? ?? ?? ?? F3 0F 10 05 ?? ?? ?? ?? 0F 57 C9 0F 2F C1")
+	// the engine allocating a system on the Havok heap: the tls index once
+	// more, TlsGetValue's import, and the router it falls back on for a thread
+	// that has none
+	MAKE_SIGNATURE(HAVOK_ROUTER_SITE, "8B 0D ?? ?? ?? ?? FF 15 ?? ?? ?? ?? 48 85 C0 48 0F 44 05 ?? ?? ?? ?? 48 8B 48 58 48 8B 01 BA 50 00 00 00 FF 50 08 48 89 45 67")
+
+	constexpr uint32_t HKNP_MESH_CINFO_SITE_CTOR_ADDRESS = 0x1;
+	constexpr uint32_t HKNP_MESH_CINFO_SITE_TLS_INDEX_ADDRESS = 0x7;
+	constexpr uint32_t HKNP_MESH_CINFO_SITE_VTABLE_ADDRESS = 0xE;
+	// the three constructors start by loading, or soon load, their class's vtable
+	constexpr uint32_t HKNP_MESH_CINFO_CTOR_VTABLE_ADDRESS = 0x3;
+	constexpr uint32_t HKNP_MESH_SHAPE_CTOR_VTABLE_ADDRESS = 0x29;
+	constexpr uint32_t HKNP_MATERIAL_CTOR_VTABLE_ADDRESS = 0xC;
+	constexpr uint32_t HKNP_SYSTEM_DATA_VTABLE_ADDRESS = 0x3;
+	constexpr uint32_t ZONE_ENABLE_PHYSICS_SYSTEM_ADDRESS = 0x2B;
+	constexpr uint32_t ZONE_ENABLE_PHYSICS_DELAY_ENABLE_ADDRESS = 0x38;
+	constexpr uint32_t ZONE_ENABLE_PHYSICS_DELAY_LOAD_ADDRESS = 0x4A;
+	constexpr uint32_t ZONE_MANAGER_ADDRESS = 0x3;
+	constexpr uint32_t ZONE_MANAGER_BY_INDEX_ADDRESS = 0x8;
+	// both bytes are compared to zero, so rip is one byte past the displacement
+	constexpr uint32_t PHYSICS_FRAME_ENABLED_ADDRESS = 0x2;
+	constexpr uint32_t PHYSICS_FRAME_ENABLED_END = 0x7;
+	constexpr uint32_t PHYSICS_FRAME_SYSTEM_ADDRESS = 0xC;
+	constexpr uint32_t PHYSICS_UPDATE_FIRST_PAUSED_ADDRESS = 0x17;
+	constexpr uint32_t PHYSICS_UPDATE_FIRST_PAUSED_END = 0x1C;
+	constexpr uint32_t PHYSICS_UPDATE_FIRST_TIMESTEP_ADDRESS = 0x26;
+	constexpr uint32_t HAVOK_ROUTER_TLS_INDEX_ADDRESS = 0x2;
+	constexpr uint32_t HAVOK_ROUTER_TLS_GET_VALUE_ADDRESS = 0x8;
+	constexpr uint32_t HAVOK_ROUTER_FALLBACK_ADDRESS = 0x13;
 } // namespace rivet_hook
