@@ -26,6 +26,7 @@
 #include "configs.hpp"
 #include "script_signal.hpp"
 #include "travel.hpp"
+#include "spawn.hpp"
 #include "game/scene_manager.hpp"
 #include "game_thread.hpp"
 #include "scene_query.hpp"
@@ -465,6 +466,104 @@ namespace rivet_hook::bridge {
 		}
 
 		return cmd_actor_get({ "actor.get", std::to_string(handle) });
+	}
+
+	// one spawned actor, as actor.spawn and actor.spawned report it. the handle
+	// and the flags are null while its asset is still loading
+	static auto
+	spawned_json(const spawn::Info &info) -> nlohmann::json {
+		nlohmann::json result;
+		result["handle"] = info.handle != 0 ? nlohmann::json(info.handle) : nlohmann::json();
+		result["uid"] = uid_text(info.uid);
+		result["state"] = spawn::state_name(info.state);
+		result["path"] = info.path;
+		result["position"] = { info.position[0], info.position[1], info.position[2] };
+		result["yaw"] = info.yaw;
+		result["scale"] = { info.scale[0], info.scale[1], info.scale[2] };
+		result["flags"] = info.handle != 0 ? nlohmann::json(DescribeActorFlags(info.flags)) : nlohmann::json();
+		return result;
+	}
+
+	// actor.spawn <actor asset path> <x> <y> <z> [yaw] [sx sy sz],
+	// actor.destroy <handle|all>, actor.spawned
+	static auto
+	cmd_actor_spawn(const std::vector<std::string> &args) -> std::string {
+		if (const auto *why = spawn::unavailable_reason(); why[0] != '\0') {
+			return error(why);
+		}
+
+		if (args[0] == "actor.spawned") {
+			std::vector<spawn::Info> found(spawn::MAX_SPAWNED);
+			const auto count = spawn::list(found.data(), spawn::MAX_SPAWNED);
+
+			nlohmann::json::array_t actors;
+			for (int32_t i = 0; i < count; ++i) {
+				actors.emplace_back(spawned_json(found[i]));
+			}
+
+			const auto *last_error = spawn::last_error();
+			nlohmann::json result;
+			result["count"] = count;
+			result["limit"] = spawn::MAX_SPAWNED;
+			result["last_error"] = last_error[0] != '\0' ? nlohmann::json(last_error) : nlohmann::json();
+			result["actors"] = std::move(actors);
+			return ok(result);
+		}
+
+		const char *reason = nullptr;
+		if (args[0] == "actor.destroy") {
+			if (args.size() != 2) {
+				return error("usage: actor.destroy <handle|all>");
+			}
+
+			int32_t destroyed = 1;
+			if (args[1] == "all") {
+				if (!spawn::destroy_all(destroyed, &reason)) {
+					return error(reason != nullptr ? reason : "refused");
+				}
+			} else {
+				EngineHandle handle {};
+				if (!parse_handle(args[1], handle)) {
+					return error("could not parse handle");
+				}
+
+				if (!spawn::destroy(handle.value, &reason)) {
+					return error(reason != nullptr ? reason : "refused");
+				}
+			}
+
+			nlohmann::json result;
+			result["destroyed"] = destroyed;
+			return ok(result);
+		}
+
+		if (args.size() != 5 && args.size() != 6 && args.size() != 9) {
+			return error("usage: actor.spawn <actor asset path> <x> <y> <z> [yaw] [sx sy sz]");
+		}
+
+		// position, yaw, scale. the spawn checks them: finite, and in range. a
+		// number has to be all of its argument: "-150,5" read as -150 would put
+		// an actor in the wrong place and answer ok
+		float values[7] = { 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f };
+		for (size_t i = 2; i < args.size(); ++i) {
+			try {
+				size_t used = 0;
+				values[i - 2] = std::stof(args[i], &used);
+				if (used != args[i].size()) {
+					return error("could not parse a number");
+				}
+			} catch (const std::exception &) {
+				return error("could not parse a number");
+			}
+		}
+
+		spawn::Info info {};
+		const auto result = spawn::request(args[1].c_str(), values, values[3], values + 4, info, &reason);
+		if (result == spawn::Result::Failed) {
+			return error(reason != nullptr ? reason : "refused");
+		}
+
+		return ok(spawned_json(info));
 	}
 
 	// the same hard budget scene.actors answers to
@@ -2086,6 +2185,10 @@ namespace rivet_hook::bridge {
 			return cmd_actor_hero();
 		}
 
+		if (command == "actor.spawn" || command == "actor.destroy" || command == "actor.spawned") {
+			return cmd_actor_spawn(args);
+		}
+
 		if (command == "scene.find_component") {
 			return cmd_find_component(args);
 		}
@@ -2328,7 +2431,7 @@ namespace rivet_hook::bridge {
 		if (args[0] == "help") {
 			nlohmann::json result;
 			result["commands"] = nlohmann::json::array_t {
-				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.near <x> <y> <z> <radius> [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]", "hud.notify <text>", "hud.message <type> <seconds> <text>", "vanity.equip <bundle>", "vanity.owns <bundle>", "hero.look [.actor or .model path] [anims]", "hero.models [filter]", "hero.play_as <ratchet|clank|rivet|kit>", "hero.apply_on_launch <on|off>","hero.restore", "config.list [type] [limit]", "config.get <config>", "config.set <config> <field.path> <value>", "script.nodes [filter] [limit]", "script.node <component>", "script.signal <component> <plug>", "script.signal <actor> <component class> <plug> [nth]", "level.checkpoints [filter] [limit]", "level.warp <checkpoint name|0xhash>", "level.fly <destination> [via tunnel]", "level.rift <checkpoint | x y z>", "level.regions [filter] [limit]", "level.zones <filter> [limit]", "level.go <zone>", "level.overlay <region>", "level.unload <region>"
+				"ping", "help", "log.tail <n>", "scene.actors [filter] [limit]", "scene.near <x> <y> <z> <radius> [limit]", "scene.find_component <class> [limit] [exact]", "actor.hero", "actor.uid <uid>", "actor.groups", "actor.get <handle>", "actor.dump <handle>", "actor.set_position <handle> <x> <y> <z>", "actor.spawn <actor asset path> <x> <y> <z> [yaw] [sx sy sz]", "actor.destroy <handle|all>", "actor.spawned", "component.info <name>", "component.detour <name> <slot> <on|off>", "component.detours", "component.capture <name> <slot> <on|off>", "component.captures [name] [slot]", "mem.read <address> <length>", "mem.watch <address|+rva|off> [length|exec]", "mem.watches", "script.status", "script.reload", "script.exec <lua chunk>", "event.status", "event.classes [filter] [limit]", "event.info <name|0xhash>", "event.tail [filter] [limit]", "event.watch <name|0xhash> <on|off>", "event.captures [filter] [limit]", "event.send <name|0xhash> [json]", "time.status", "time.scale <scale> [channel] [ramp]", "time.clear [channel]", "camera.fov [scale]", "camera.get", "camera.detach", "camera.attach", "camera.set <x> <y> <z> [yaw] [pitch] [fov]", "camera.shake [on|off|game]", "hud.notify <text>", "hud.message <type> <seconds> <text>", "vanity.equip <bundle>", "vanity.owns <bundle>", "hero.look [.actor or .model path] [anims]", "hero.models [filter]", "hero.play_as <ratchet|clank|rivet|kit>", "hero.apply_on_launch <on|off>","hero.restore", "config.list [type] [limit]", "config.get <config>", "config.set <config> <field.path> <value>", "script.nodes [filter] [limit]", "script.node <component>", "script.signal <component> <plug>", "script.signal <actor> <component class> <plug> [nth]", "level.checkpoints [filter] [limit]", "level.warp <checkpoint name|0xhash>", "level.fly <destination> [via tunnel]", "level.rift <checkpoint | x y z>", "level.regions [filter] [limit]", "level.zones <filter> [limit]", "level.go <zone>", "level.overlay <region>", "level.unload <region>"
 			};
 			return ok(result);
 		}
