@@ -27,6 +27,7 @@ extern "C" {
 #include "events.hpp"
 #include "time_scale.hpp"
 #include "camera.hpp"
+#include "collision.hpp"
 #include "hud.hpp"
 #include "vanity.hpp"
 #include "hero_look.hpp"
@@ -2414,6 +2415,228 @@ namespace rivet_hook::scripting {
 		return 1;
 	}
 
+	// ------------------------------------------------------------- collision --
+
+	// every collision call answers in json, the same the bridge sends. it is
+	// kept here and not in a frame: nothing below may own it while a push can
+	// still raise
+	static nlohmann::json g_collision_answer;
+
+	constexpr int MAX_JSON_DEPTH = 16;
+
+	// a json value as a lua one: objects and arrays as tables, null as nil, so a
+	// key that holds null is simply not there. the value must outlive the call,
+	// and only references into it are held on the way
+	static auto
+	push_json(lua_State *L, const nlohmann::json &value, const int depth = 0) -> void {
+		if (depth > MAX_JSON_DEPTH || lua_checkstack(L, 4) == 0) {
+			lua_pushnil(L);
+			return;
+		}
+
+		switch (value.type()) {
+			case nlohmann::json::value_t::boolean: lua_pushboolean(L, value.get<bool>() ? 1 : 0); break;
+			case nlohmann::json::value_t::number_integer: lua_pushinteger(L, value.get<lua_Integer>()); break;
+			case nlohmann::json::value_t::number_unsigned: lua_pushinteger(L, static_cast<lua_Integer>(value.get<uint64_t>())); break;
+			case nlohmann::json::value_t::number_float: lua_pushnumber(L, value.get<lua_Number>()); break;
+			case nlohmann::json::value_t::string: {
+				const auto &text = value.get_ref<const std::string &>();
+				lua_pushlstring(L, text.data(), text.size());
+				break;
+			}
+			case nlohmann::json::value_t::array: {
+				const auto &items = value.get_ref<const nlohmann::json::array_t &>();
+				lua_createtable(L, static_cast<int>(items.size()), 0);
+				for (size_t index = 0; index < items.size(); ++index) {
+					push_json(L, items[index], depth + 1);
+					lua_rawseti(L, -2, static_cast<lua_Integer>(index + 1));
+				}
+
+				break;
+			}
+			case nlohmann::json::value_t::object: {
+				const auto &fields = value.get_ref<const nlohmann::json::object_t &>();
+				lua_createtable(L, 0, static_cast<int>(fields.size()));
+				for (const auto &[key, field] : fields) {
+					if (field.is_null()) {
+						continue;
+					}
+
+					push_json(L, field, depth + 1);
+					lua_setfield(L, -2, key.c_str());
+				}
+
+				break;
+			}
+			default: lua_pushnil(L); break;
+		}
+	}
+
+	// raises with the module's reason, or pushes its answer
+	static auto
+	collision_answer(lua_State *L, const bool worked, const char *reason) -> int {
+		if (!worked) {
+			luaL_error(L, "%s", reason);
+		}
+
+		push_json(L, g_collision_answer);
+		return 1;
+	}
+
+	// a whole number argument inside a range. a lua integer is 64 bits wide,
+	// and cut down to 32 it would name another body, or pass a check it fails
+	static auto
+	check_collision_integer(lua_State *L, const int arg, const lua_Integer low, const lua_Integer high, const char *what) -> int32_t {
+		const auto value = luaL_checkinteger(L, arg);
+		luaL_argcheck(L, value >= low && value <= high, arg, what);
+		return static_cast<int32_t>(value);
+	}
+
+	// a body or a shape by its number, or 0 for "all"
+	static auto
+	check_collision_handle(lua_State *L, const int arg) -> int32_t {
+		if (lua_type(L, arg) == LUA_TSTRING && strcmp(lua_tostring(L, arg), "all") == 0) {
+			return 0;
+		}
+
+		return check_collision_integer(L, arg, 1, INT32_MAX, "a body or shape number, or \"all\"");
+	}
+
+	// rivet.collision_stage([stage]) -> { stage, max_stage, available, reason,
+	// measured_build, faults_caught, latched, last_error }. with a number it
+	// sets the stage for this session
+	static auto
+	l_collision_stage(lua_State *L) -> int {
+		const char *reason = "refused";
+		if (!lua_isnoneornil(L, 1) && !collision::set_stage(check_collision_integer(L, 1, 0, INT32_MAX, "a stage"), &reason)) {
+			luaL_error(L, "%s", reason);
+		}
+
+		g_collision_answer = collision::stage_info();
+		push_json(L, g_collision_answer);
+		return 1;
+	}
+
+	// rivet.collision_status() -> what was resolved and what the engine has
+	static auto
+	l_collision_status(lua_State *L) -> int {
+		const char *reason = "refused";
+		const auto worked = collision::status(g_collision_answer, &reason);
+		return collision_answer(L, worked, reason);
+	}
+
+	// rivet.collision_inspect(zone) -> the zone's physics: system, system data,
+	// bodies and shape tree
+	static auto
+	l_collision_inspect(lua_State *L) -> int {
+		const char *reason = "refused";
+		const auto worked = collision::inspect(luaL_checkstring(L, 1), g_collision_answer, &reason);
+		return collision_answer(L, worked, reason);
+	}
+
+	// rivet.collision_selftest([what]) -> the constructor and heap tests, what
+	// being "ctor" or "heap" for one of them
+	static auto
+	l_collision_selftest(lua_State *L) -> int {
+		const char *reason = "refused";
+		const auto worked = collision::selftest(luaL_optstring(L, 1, ""), g_collision_answer, &reason);
+		return collision_answer(L, worked, reason);
+	}
+
+	// rivet.collision_borrow(zone, dx, dy, dz) -> the body queued: a second one
+	// out of that zone's root shape, offset from the zone's own
+	static auto
+	l_collision_borrow(lua_State *L) -> int {
+		const auto *zone = luaL_checkstring(L, 1);
+		const float offset[3] = { static_cast<float>(luaL_checknumber(L, 2)), static_cast<float>(luaL_checknumber(L, 3)), static_cast<float>(luaL_checknumber(L, 4)) };
+		const char *reason = "refused";
+		const auto worked = collision::borrow(zone, offset, g_collision_answer, &reason);
+		return collision_answer(L, worked, reason);
+	}
+
+	// rivet.collision_bodies() -> { made, limit, paused, bodies = { { body,
+	// state, shape, donor, id, filter, position, yaw, ... }, ... } }
+	static auto
+	l_collision_bodies(lua_State *L) -> int {
+		const char *reason = "refused";
+		const auto worked = collision::bodies(g_collision_answer, &reason);
+		return collision_answer(L, worked, reason);
+	}
+
+	// rivet.collision_enable(body, [on]) -> the body. queues it into the world,
+	// or out of it when on is false
+	static auto
+	l_collision_enable(lua_State *L) -> int {
+		const auto body = check_collision_integer(L, 1, 1, INT32_MAX, "a body number");
+		const auto on = lua_isnoneornil(L, 2) || lua_toboolean(L, 2) != 0;
+		const char *reason = "refused";
+		const auto worked = collision::enable(body, on, g_collision_answer, &reason);
+		return collision_answer(L, worked, reason);
+	}
+
+	// rivet.collision_disable(body) -> the body, queued out of the world
+	static auto
+	l_collision_disable(lua_State *L) -> int {
+		const auto body = check_collision_integer(L, 1, 1, INT32_MAX, "a body number");
+		const char *reason = "refused";
+		const auto worked = collision::enable(body, false, g_collision_answer, &reason);
+		return collision_answer(L, worked, reason);
+	}
+
+	// rivet.collision_remove(body) -> the body, on its way out for good.
+	// rivet.collision_remove("all") -> { removing, not_yet }
+	static auto
+	l_collision_remove(lua_State *L) -> int {
+		const auto body = check_collision_handle(L, 1);
+		const char *reason = "refused";
+		const auto worked = body == 0 ? collision::remove_all(g_collision_answer, &reason) : collision::remove(body, g_collision_answer, &reason);
+		return collision_answer(L, worked, reason);
+	}
+
+	// rivet.collision_cook(mesh, [flags]) -> the shape, its checks and what was
+	// measured on it. mesh is "quad:<size>" or the path of a .obj
+	static auto
+	l_collision_cook(lua_State *L) -> int {
+		const auto *mesh = luaL_checkstring(L, 1);
+		// what the flags may be is the cook's to say, once they are all there
+		const auto flags = lua_isnoneornil(L, 2) ? collision::DEFAULT_FLAGS : static_cast<uint32_t>(check_collision_integer(L, 2, 0, INT32_MAX, "gameplay flags"));
+		const char *reason = "refused";
+		const auto worked = collision::cook(mesh, flags, g_collision_answer, &reason);
+		return collision_answer(L, worked, reason);
+	}
+
+	// rivet.collision_shapes() -> { cooked, limit, max_triangles, shapes = { {
+	// shape, state, source, flags, triangles_in, triangles_out, references,
+	// bodies, ... }, ... } }
+	static auto
+	l_collision_shapes(lua_State *L) -> int {
+		const char *reason = "refused";
+		const auto worked = collision::shapes(g_collision_answer, &reason);
+		return collision_answer(L, worked, reason);
+	}
+
+	// rivet.collision_release(shape) -> the shape, freed.
+	// rivet.collision_release("all") -> { released, kept }
+	static auto
+	l_collision_release(lua_State *L) -> int {
+		const auto shape = check_collision_handle(L, 1);
+		const char *reason = "refused";
+		const auto worked = shape == 0 ? collision::release_all(g_collision_answer, &reason) : collision::release(shape, g_collision_answer, &reason);
+		return collision_answer(L, worked, reason);
+	}
+
+	// rivet.collision_body(shape, x, y, z, [yaw]) -> the body queued: a static
+	// body of a cooked shape, turned yaw degrees about the up axis
+	static auto
+	l_collision_body(lua_State *L) -> int {
+		const auto shape = check_collision_integer(L, 1, 1, INT32_MAX, "a shape number");
+		const float position[3] = { static_cast<float>(luaL_checknumber(L, 2)), static_cast<float>(luaL_checknumber(L, 3)), static_cast<float>(luaL_checknumber(L, 4)) };
+		const auto yaw = static_cast<float>(luaL_optnumber(L, 5, 0.0));
+		const char *reason = "refused";
+		const auto worked = collision::add(shape, position, yaw, g_collision_answer, &reason);
+		return collision_answer(L, worked, reason);
+	}
+
 	static const luaL_Reg g_api[] = {
 		{ "log", l_log },
 		{ "on_frame", l_on_frame },
@@ -2476,6 +2699,19 @@ namespace rivet_hook::scripting {
 		{ "spawn", l_spawn },
 		{ "destroy", l_destroy },
 		{ "spawned", l_spawned },
+		{ "collision_stage", l_collision_stage },
+		{ "collision_status", l_collision_status },
+		{ "collision_inspect", l_collision_inspect },
+		{ "collision_selftest", l_collision_selftest },
+		{ "collision_borrow", l_collision_borrow },
+		{ "collision_bodies", l_collision_bodies },
+		{ "collision_enable", l_collision_enable },
+		{ "collision_disable", l_collision_disable },
+		{ "collision_remove", l_collision_remove },
+		{ "collision_cook", l_collision_cook },
+		{ "collision_shapes", l_collision_shapes },
+		{ "collision_release", l_collision_release },
+		{ "collision_body", l_collision_body },
 		{ nullptr, nullptr },
 	};
 
